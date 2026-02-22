@@ -48,6 +48,7 @@ smallvec = { version = "1", features = ["serde"] }
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 notify = "6"  # file watcher for config reload
+hostname = "0.4"
 
 # Optional: Prometheus metrics endpoint
 prometheus = { version = "0.13", optional = true }

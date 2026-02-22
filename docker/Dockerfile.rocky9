@@ -1,0 +1,18 @@
+FROM rockylinux:9
+
+RUN dnf install -y gcc pkg-config openssl-devel make perl-core \
+    && dnf clean all
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+COPY . .
+
+RUN cargo build --release 2>&1
+
+RUN ls -lh target/release/sysops-agent
+RUN target/release/sysops-agent --version
+RUN cp target/release/sysops-agent /usr/local/bin/sysops-agent
+
+CMD ["/usr/local/bin/sysops-agent", "--help"]

@@ -2,12 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::{info, error};
 
-mod collector;
-mod analyzer;
-mod alerter;
-mod config;
-mod storage;
-mod log_analyzer;
+use sysops_agent::{collector, analyzer, alerter, config, storage, log_analyzer};
 
 #[derive(Parser, Debug)]
 #[command(name = "sysops-agent", about = "Lightweight system monitoring agent")]
@@ -86,7 +81,7 @@ async fn run(config: config::Config) -> Result<()> {
     let analyzers = analyzer::create_analyzers(&config)?;
 
     // Initialize alerter
-    let alerter = alerter::AlertManager::new(&config.alerting)?;
+    let mut alerter = alerter::AlertManager::new(&config.alerting)?;
 
     // Initialize log analyzer
     let log_analyzer = log_analyzer::LogAnalyzer::new(&config)?;

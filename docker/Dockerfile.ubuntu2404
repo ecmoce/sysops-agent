@@ -1,0 +1,20 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    curl gcc pkg-config libssl-dev make \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+COPY . .
+
+RUN cargo build --release 2>&1
+
+RUN ls -lh target/release/sysops-agent
+RUN target/release/sysops-agent --version
+RUN cp target/release/sysops-agent /usr/local/bin/sysops-agent
+
+CMD ["/usr/local/bin/sysops-agent", "--help"]
