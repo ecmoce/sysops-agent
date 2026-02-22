@@ -24,6 +24,16 @@
 
 ---
 
+## 관련 프로젝트
+
+| 프로젝트 | 설명 |
+|----------|------|
+| **sysops-agent** | 서버에 설치되는 모니터링 에이전트 (현재 레포) |
+| [sysops-server](https://github.com/ecmoce/sysops-server) | 중앙 데이터 수집/API 서버 |
+| [sysops-console](https://github.com/ecmoce/sysops-console) | 웹 대시보드 UI |
+
+---
+
 ## 🔍 개요
 
 SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소스의 **실시간 이상 탐지**, **트렌드 기반 예측**, **리소스 누수 감지**, **커널/시스템 로그 분석**을 수행합니다. 이상 발견 시 Discord, Slack, Telegram, Email, Webhook, NATS 등 다양한 채널로 즉시 알림을 전송합니다.
