@@ -1,0 +1,43 @@
+[Unit]
+Description=SysOps Agent - System Monitoring Daemon
+Documentation=https://github.com/ecmoce/sysops-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sysops-agent --config /etc/sysops-agent/config.toml
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+# Run as dedicated user
+User=sysops-agent
+Group=sysops-agent
+
+# Security Hardening
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadOnlyPaths=/proc /sys /var/log
+ReadWritePaths=/var/lib/sysops-agent
+
+# Linux capabilities (no root needed)
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYSLOG CAP_NET_ADMIN
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYSLOG
+
+# GPU access (if needed)
+SupplementaryGroups=video
+
+# Resource limits
+MemoryMax=128M
+CPUQuota=10%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sysops-agent
+
+[Install]
+WantedBy=multi-user.target

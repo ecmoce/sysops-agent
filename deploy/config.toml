@@ -1,0 +1,60 @@
+# SysOps Agent Configuration
+# /etc/sysops-agent/config.toml
+
+[agent]
+# hostname은 미설정 시 시스템 hostname 자동 감지
+# hostname = "web-server-01"
+log_level = "info"
+data_dir = "/var/lib/sysops-agent"
+
+[collector]
+default_interval_secs = 10
+
+[collector.cpu]
+enabled = true
+interval_secs = 10
+per_core = false
+
+[collector.memory]
+enabled = true
+interval_secs = 10
+
+[collector.disk]
+enabled = true
+interval_secs = 30
+
+[collector.network]
+enabled = true
+interval_secs = 10
+
+[collector.process]
+enabled = true
+interval_secs = 30
+
+[collector.log]
+enabled = true
+sources = ["dmesg", "syslog"]
+
+[thresholds]
+cpu_warn_percent = 90.0
+cpu_critical_percent = 95.0
+memory_warn_percent = 85.0
+memory_critical_percent = 95.0
+disk_warn_percent = 90.0
+disk_critical_percent = 95.0
+
+[storage]
+ring_buffer_size = 8640
+
+[alerting]
+rate_limit_per_minute = 10
+rate_limit_per_hour = 60
+
+[nats]
+enabled = true
+url = "nats://localhost:4222"
+subject_prefix = "sysops"
+metrics_interval_secs = 30
+inventory_interval_secs = 300
+heartbeat_interval_secs = 60
+compression = false
