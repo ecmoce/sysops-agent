@@ -9,15 +9,19 @@
 1. [시스템 아키텍처 개요](#1-시스템-아키텍처-개요)
 2. [데이터 흐름](#2-데이터-흐름)
 3. [Collector 모듈](#3-collector-모듈)
-4. [Analyzer 모듈](#4-analyzer-모듈)
-5. [Alerter 모듈](#5-alerter-모듈)
-6. [Storage](#6-storage)
-7. [Log Analyzer](#7-log-analyzer)
-8. [Security Model](#8-security-model)
-9. [Platform Abstraction](#9-platform-abstraction)
-10. [Performance Budget](#10-performance-budget)
-11. [에러 처리 및 복원력](#11-에러-처리-및-복원력)
-12. [확장 포인트](#12-확장-포인트)
+4. [멀티소켓 CPU & NUMA](#4-멀티소켓-cpu--numa)
+5. [GPU 모니터링 (NVIDIA)](#5-gpu-모니터링-nvidia)
+6. [시스템 인벤토리](#6-시스템-인벤토리)
+7. [Analyzer 모듈](#7-analyzer-모듈)
+8. [Alerter 모듈](#8-alerter-모듈)
+9. [NATS 텔레메트리](#9-nats-텔레메트리)
+10. [Storage](#10-storage)
+11. [Log Analyzer](#11-log-analyzer)
+12. [Security Model](#12-security-model)
+13. [Platform Abstraction](#13-platform-abstraction)
+14. [Performance Budget](#14-performance-budget)
+15. [에러 처리 및 복원력](#15-에러-처리-및-복원력)
+16. [확장 포인트](#16-확장-포인트)
 
 ---
 
@@ -361,7 +365,431 @@ pub trait Collector: Send + Sync {
 
 ---
 
-## 4. Analyzer 모듈
+## 4. 멀티소켓 CPU & NUMA
+
+### 4.1 멀티소켓 CPU 토폴로지
+
+엔터프라이즈 서버는 2~8소켓 구성이 일반적입니다. SysOps Agent는 소켓/코어/스레드 계층을 인식하여 소켓별 독립 모니터링을 지원합니다.
+
+```
+┌─────────────────────── 2-Socket Server ───────────────────────┐
+│                                                                │
+│  ┌─── Socket 0 (NUMA Node 0) ───┐  ┌─── Socket 1 (NUMA Node 1) ───┐
+│  │                               │  │                               │
+│  │  Core 0  [T0, T1]            │  │  Core 28 [T56, T57]           │
+│  │  Core 1  [T2, T3]            │  │  Core 29 [T58, T59]           │
+│  │  ...                         │  │  ...                          │
+│  │  Core 27 [T54, T55]          │  │  Core 55 [T110, T111]         │
+│  │                               │  │                               │
+│  │  L3 Cache: 42MB              │  │  L3 Cache: 42MB               │
+│  │  Local Memory: 256GB         │  │  Local Memory: 256GB          │
+│  └───────────────────────────────┘  └───────────────────────────────┘
+│                                                                │
+│  Interconnect: UPI / QPI (cross-socket memory access penalty)  │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 데이터 소스
+
+```
+┌────────────────────────────────┬──────────────────────────────────┐
+│ 정보                           │ 소스                             │
+├────────────────────────────────┼──────────────────────────────────┤
+│ Socket count                   │ /sys/devices/system/cpu/         │
+│                                │   cpu*/topology/physical_package_id│
+│ Core-to-socket mapping         │ /sys/devices/system/cpu/         │
+│                                │   cpu*/topology/core_id          │
+│ NUMA node count                │ /sys/devices/system/node/        │
+│ CPU-to-NUMA mapping            │ /sys/devices/system/node/        │
+│                                │   node*/cpulist                  │
+│ Per-NUMA memory                │ /sys/devices/system/node/        │
+│                                │   node*/meminfo                  │
+│ Per-CPU usage                  │ /proc/stat (cpu0, cpu1, ...)     │
+│ ECC errors (EDAC)              │ /sys/devices/system/edac/mc*/    │
+│                                │   csrow*/ce_count, ue_count      │
+│ CPU frequency                  │ /sys/devices/system/cpu/         │
+│                                │   cpu*/cpufreq/scaling_cur_freq  │
+│ CPU temperature                │ /sys/class/hwmon/hwmon*/temp*    │
+└────────────────────────────────┴──────────────────────────────────┘
+```
+
+### 4.3 소켓별 CPU 사용률 계산
+
+```rust
+// /proc/stat에서 cpu0, cpu1, ... 별로 파싱
+// topology/physical_package_id로 그룹핑
+
+struct SocketStats {
+    socket_id: u32,
+    core_ids: Vec<u32>,
+    thread_ids: Vec<u32>,            // logical CPU ids
+    usage_percent: f64,               // 소켓 내 모든 코어 평균
+    max_core_usage: f64,              // 가장 높은 코어
+    frequency_mhz: f64,              // 평균 주파수
+    temperature_celsius: Option<f64>, // hwmon
+}
+
+// 출력 메트릭:
+// cpu_socket_usage_percent     {socket: "0"}   → 45.2%
+// cpu_socket_usage_percent     {socket: "1"}   → 12.3%
+// cpu_socket_max_core_percent  {socket: "0"}   → 98.1%  (핫스팟 감지)
+```
+
+### 4.4 NUMA 메모리 모니터링
+
+```
+/sys/devices/system/node/node0/meminfo:
+  Node 0 MemTotal:       262144000 kB
+  Node 0 MemFree:         65536000 kB
+  Node 0 MemUsed:        196608000 kB
+
+→ 메트릭:
+  memory_numa_used_percent    {node: "0"}   → 75.0%
+  memory_numa_used_percent    {node: "1"}   → 32.1%
+  memory_numa_free_mb         {node: "0"}   → 64000
+  memory_numa_free_mb         {node: "1"}   → 178000
+
+⚠️ NUMA imbalance 감지:
+  if max(node_usage) - min(node_usage) > 40% → Alert(Warn)
+  "NUMA memory imbalance: node0=75%, node1=32%"
+```
+
+### 4.5 ECC Memory 에러 모니터링
+
+```
+/sys/devices/system/edac/mc0/csrow0/ce_count  → correctable errors
+/sys/devices/system/edac/mc0/csrow0/ue_count  → uncorrectable errors
+
+→ 메트릭:
+  ecc_correctable_errors      {mc: "0", csrow: "0"}  → gauge
+  ecc_uncorrectable_errors    {mc: "0", csrow: "0"}  → gauge
+
+규칙:
+  ce_count 증가 → Warn  (DIMM 열화 징후)
+  ue_count > 0  → Critical (데이터 손상 위험, DIMM 교체 필요)
+```
+
+---
+
+## 5. GPU 모니터링 (NVIDIA)
+
+### 5.1 개요
+
+`gpu` feature flag로 활성화. NVIDIA Management Library (NVML)를 통해 GPU 메트릭을 직접 수집합니다. `nvidia-smi` CLI 호출 없이 C 바인딩으로 접근하여 오버헤드를 최소화합니다.
+
+```
+┌────────── GPU Collector ──────────┐
+│                                    │
+│  ┌──────────────────────────────┐ │
+│  │ nvml-wrapper (Rust crate)    │ │
+│  │                              │ │
+│  │  nvmlInit()                  │ │
+│  │  nvmlDeviceGetCount()        │ │
+│  │  nvmlDeviceGetHandleByIndex()│ │
+│  │  nvmlDeviceGetUtilizationRates()│
+│  │  nvmlDeviceGetMemoryInfo()   │ │
+│  │  nvmlDeviceGetTemperature()  │ │
+│  │  nvmlDeviceGetPowerUsage()   │ │
+│  │  nvmlDeviceGetEccMode()      │ │
+│  │  ...                         │ │
+│  └──────────┬───────────────────┘ │
+│             │                      │
+│             ▼ libnvidia-ml.so      │
+│        (NVIDIA driver 포함)        │
+└────────────────────────────────────┘
+```
+
+### 5.2 수집 메트릭
+
+```
+┌──────────────────────────────┬─────────────────────────┬─────────┐
+│ 메트릭                       │ NVML API                │ 주기    │
+├──────────────────────────────┼─────────────────────────┼─────────┤
+│ GPU Utilization %            │ GetUtilizationRates     │ 10초    │
+│ GPU Memory Used/Total        │ GetMemoryInfo           │ 10초    │
+│ GPU Temperature (°C)         │ GetTemperature          │ 10초    │
+│ GPU Power Usage (W)          │ GetPowerUsage           │ 10초    │
+│ GPU Clock (MHz)              │ GetClockInfo            │ 10초    │
+│ GPU Fan Speed %              │ GetFanSpeed             │ 30초    │
+│ ECC Errors (SBE/DBE)         │ GetTotalEccErrors       │ 60초    │
+│ PCIe Throughput (rx/tx)      │ GetPcieThroughput       │ 10초    │
+│ Encoder/Decoder Utilization  │ GetEncoderUtilization   │ 30초    │
+│ Per-Process GPU Memory       │ GetComputeRunningProcesses│ 30초  │
+│ Throttle Reasons             │ GetCurrentClocksThrottleReasons│10초│
+│ NVLink Throughput            │ GetNvLinkUtilization    │ 30초    │
+│ Retired Pages (pending/blacklisted)│ GetRetiredPages   │ 300초   │
+└──────────────────────────────┴─────────────────────────┴─────────┘
+
+Labels: {gpu: "0", model: "A100-SXM4-80GB", uuid: "GPU-xxxx"}
+```
+
+### 5.3 GPU 이상 탐지
+
+```
+┌─────────────────────────┬────────────┬────────────────────────────┐
+│ 조건                    │ Severity   │ 의미                       │
+├─────────────────────────┼────────────┼────────────────────────────┤
+│ temperature > 85°C      │ 🟡 Warn    │ Thermal throttling 임박    │
+│ temperature > 95°C      │ 🔴 Critical│ 과열, 성능 저하 발생       │
+│ memory_used > 90%       │ 🟡 Warn    │ OOM 위험                   │
+│ memory_used > 98%       │ 🔴 Critical│ GPU OOM 임박               │
+│ ecc_dbe > 0             │ 🔴 Critical│ 복구 불가 메모리 에러      │
+│ ecc_sbe 급증            │ 🟡 Warn    │ GPU 메모리 열화            │
+│ retired_pages > threshold│ 🔴 Critical│ GPU 교체 필요             │
+│ Xid error in dmesg      │ 🔴 Critical│ GPU 장애                   │
+│ throttle: thermal       │ 🟡 Warn    │ 열 제한 중                 │
+│ throttle: power         │ 🟡 Warn    │ 전력 제한 중               │
+│ GPU fallen off bus      │ ⚫ Emergency│ GPU 하드웨어 장애          │
+└─────────────────────────┴────────────┴────────────────────────────┘
+```
+
+### 5.4 멀티 GPU 토폴로지
+
+```
+  ┌───── GPU Server (DGX-like) ─────────────────────┐
+  │                                                   │
+  │  CPU Socket 0              CPU Socket 1           │
+  │  ┌─────────┐               ┌─────────┐           │
+  │  │ NUMA 0  │               │ NUMA 1  │           │
+  │  └────┬────┘               └────┬────┘           │
+  │       │ PCIe                    │ PCIe            │
+  │  ┌────┴────┐ ┌────────┐  ┌────┴────┐ ┌────────┐│
+  │  │ GPU 0   │─│ GPU 1  │  │ GPU 2   │─│ GPU 3  ││
+  │  │ A100    │ │ A100   │  │ A100    │ │ A100   ││
+  │  └────┬────┘ └───┬────┘  └────┬────┘ └───┬────┘│
+  │       │ NVLink    │            │ NVLink    │     │
+  │       └───────────┘            └───────────┘     │
+  │                                                   │
+  │  GPU-CPU Affinity:                                │
+  │  GPU 0,1 → NUMA 0 (Socket 0)                     │
+  │  GPU 2,3 → NUMA 1 (Socket 1)                     │
+  └───────────────────────────────────────────────────┘
+
+  → 메트릭에 {gpu: "0", numa_node: "0", pcie_bus: "0000:3b:00.0"} label 포함
+```
+
+### 5.5 Graceful Degradation
+
+GPU feature가 활성화되었으나 NVIDIA 드라이버가 없는 서버에서는:
+
+```
+1. nvmlInit() 실패 → 경고 로그 1회 출력
+2. GPU Collector 비활성화
+3. 나머지 Collector (CPU, Memory 등) 정상 동작
+4. 주기적으로 드라이버 감지 재시도 (선택적)
+```
+
+---
+
+## 6. 시스템 인벤토리
+
+### 6.1 개요
+
+에이전트 시작 시 및 주기적(기본 5분)으로 서버의 하드웨어/소프트웨어 스펙을 수집합니다. 이 정보는 NATS를 통해 중앙 CMDB/인벤토리 시스템에 전송되며, 자산 관리, 용량 계획, 취약점 관리에 활용됩니다.
+
+### 6.2 수집 아키텍처
+
+```
+ ┌─────────────────── Inventory Collector ───────────────────┐
+ │                                                            │
+ │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+ │  │ OS Info      │  │ CPU Info     │  │ Memory Info  │    │
+ │  │              │  │              │  │              │    │
+ │  │ /etc/os-     │  │ /proc/cpuinfo│  │ /proc/meminfo│    │
+ │  │ release      │  │ lscpu        │  │ dmidecode    │    │
+ │  │ uname -r     │  │ /sys/devices/│  │ /sys/devices/│    │
+ │  │              │  │ system/cpu/  │  │ system/edac/ │    │
+ │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
+ │         │                 │                  │             │
+ │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+ │  │ GPU Info     │  │ Disk Info    │  │ Network Info │    │
+ │  │              │  │              │  │              │    │
+ │  │ NVML API     │  │ /sys/block/  │  │ /sys/class/  │    │
+ │  │ nvidia-smi   │  │ smartctl     │  │ net/         │    │
+ │  │              │  │ lsblk        │  │ ethtool      │    │
+ │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
+ │         │                 │                  │             │
+ │  ┌──────────────┐                                         │
+ │  │ BIOS/Board   │                                         │
+ │  │              │                                         │
+ │  │ /sys/devices/│                                         │
+ │  │ virtual/dmi/ │                                         │
+ │  │ dmidecode    │                                         │
+ │  └──────┬───────┘                                         │
+ │         │                                                  │
+ └─────────┼──────────────────────────────────────────────────┘
+           │
+           ▼
+   ┌───────────────┐
+   │ SystemInfo    │──── JSON serialize ──── NATS publish
+   │ (struct)      │                         sysops.{hostname}.inventory
+   └───────────────┘
+```
+
+### 6.3 SystemInfo 구조체
+
+```rust
+#[derive(Serialize)]
+pub struct SystemInfo {
+    pub hostname: String,
+    pub collected_at: DateTime<Utc>,
+    pub agent_version: String,
+    pub os: OsInfo,
+    pub cpu: CpuInfo,
+    pub numa: Option<NumaInfo>,
+    pub memory: MemoryInfo,
+    pub gpu: Vec<GpuInfo>,              // feature "gpu"
+    pub disks: Vec<DiskInfo>,
+    pub network: Vec<NetworkInfo>,
+    pub bios: Option<BiosInfo>,
+}
+
+#[derive(Serialize)]
+pub struct OsInfo {
+    pub distro: String,                  // "Ubuntu", "Rocky Linux"
+    pub version: String,                 // "22.04.4 LTS"
+    pub kernel: String,                  // "5.15.0-91-generic"
+    pub arch: String,                    // "x86_64"
+    pub hostname: String,
+    pub boot_time: DateTime<Utc>,
+    pub uptime_secs: u64,
+}
+
+#[derive(Serialize)]
+pub struct CpuInfo {
+    pub model: String,                   // "Intel Xeon Gold 6348 @ 2.60GHz"
+    pub vendor: String,                  // "GenuineIntel", "AuthenticAMD"
+    pub family: u32,
+    pub model_id: u32,
+    pub stepping: u32,
+    pub microcode: String,
+    pub sockets: u32,
+    pub cores_per_socket: u32,
+    pub threads_per_core: u32,
+    pub total_threads: u32,
+    pub base_mhz: f64,
+    pub max_mhz: Option<f64>,
+    pub cache_l1d_kb: u32,
+    pub cache_l1i_kb: u32,
+    pub cache_l2_kb: u32,
+    pub cache_l3_kb: u32,
+    pub flags: Vec<String>,             // ["avx512f", "avx512bw", ...]
+}
+
+#[derive(Serialize)]
+pub struct MemoryInfo {
+    pub total_mb: u64,
+    pub dimm_count: Option<u32>,         // dmidecode 필요
+    pub dimms: Option<Vec<DimmInfo>>,
+    pub ecc_supported: bool,
+}
+
+#[derive(Serialize)]
+pub struct DimmInfo {
+    pub slot: String,                    // "DIMM_A1"
+    pub size_mb: u64,                    // 32768
+    pub type_: String,                   // "DDR4", "DDR5"
+    pub speed_mhz: u32,                 // 3200
+    pub manufacturer: String,            // "Samsung"
+    pub part_number: String,
+    pub serial: String,
+    pub ecc: bool,
+}
+
+#[derive(Serialize)]
+pub struct GpuInfo {
+    pub index: u32,
+    pub model: String,                   // "NVIDIA A100-SXM4-80GB"
+    pub uuid: String,
+    pub vram_mb: u64,
+    pub driver_version: String,
+    pub cuda_version: String,
+    pub pcie_gen: u32,
+    pub pcie_width: u32,
+    pub power_limit_watts: f64,
+    pub ecc_enabled: bool,
+    pub numa_node: Option<u32>,
+    pub pcie_bus_id: String,
+    pub serial: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct DiskInfo {
+    pub name: String,                    // "nvme0n1", "sda"
+    pub model: String,
+    pub serial: Option<String>,
+    pub capacity_mb: u64,
+    pub interface: String,               // "NVMe", "SAS", "SATA"
+    pub firmware: Option<String>,
+    pub smart_healthy: Option<bool>,
+    pub rotational: bool,                // true=HDD, false=SSD/NVMe
+}
+
+#[derive(Serialize)]
+pub struct NetworkInfo {
+    pub name: String,                    // "eno1", "eth0"
+    pub mac: String,
+    pub speed_mbps: Option<u64>,         // 25000
+    pub mtu: u32,                        // 9000
+    pub driver: Option<String>,          // "mlx5_core", "i40e"
+    pub firmware: Option<String>,
+    pub ipv4: Vec<String>,
+    pub ipv6: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct BiosInfo {
+    pub vendor: String,                  // "Dell Inc."
+    pub version: String,
+    pub release_date: String,
+    pub product_name: String,            // "PowerEdge R750"
+    pub serial: Option<String>,
+}
+```
+
+### 6.4 수집 소스 및 권한
+
+```
+┌────────────────────┬──────────────────────────┬────────────────┐
+│ 정보               │ 소스                      │ 권한           │
+├────────────────────┼──────────────────────────┼────────────────┤
+│ OS, kernel         │ /etc/os-release, uname    │ 없음           │
+│ CPU model/topology │ /proc/cpuinfo, lscpu      │ 없음           │
+│ CPU frequency      │ /sys/devices/system/cpu/   │ 없음           │
+│ Memory total       │ /proc/meminfo              │ 없음           │
+│ DIMM details       │ dmidecode -t 17            │ root/sudo ⚠️  │
+│ BIOS/Board         │ /sys/devices/virtual/dmi/  │ 없음 (부분)   │
+│                    │ dmidecode -t 0,2           │ root/sudo ⚠️  │
+│ GPU                │ NVML API                   │ video group    │
+│ Disk model/serial  │ /sys/block/*/device/       │ 없음           │
+│ SMART              │ smartctl                   │ root/sudo ⚠️  │
+│ Network interface  │ /sys/class/net/            │ 없음           │
+│ Network speed      │ ethtool (ioctl)            │ 없음           │
+│ ECC/EDAC           │ /sys/devices/system/edac/  │ 없음           │
+└────────────────────┴──────────────────────────┴────────────────┘
+
+⚠️ = Optional. root 없으면 해당 필드만 null, 나머지는 정상 수집
+```
+
+### 6.5 변경 감지
+
+인벤토리는 주기적으로 수집하되, 변경이 없으면 NATS 전송을 skip합니다 (대역폭 절약). 변경 감지는 JSON hash 비교로 수행합니다.
+
+```
+collect → hash(JSON) → 이전 hash와 비교
+                        │
+                  ┌─────┴─────┐
+                  │ 같음      │ 다름
+                  ▼           ▼
+               skip        publish to NATS
+              (로그만)     + 로그 "inventory changed"
+```
+
+예외: 첫 시작, 강제 전송 주기(기본 1시간)에는 무조건 전송.
+
+---
+
+## 7. Analyzer 모듈
 
 ### 4.1 이상 탐지 알고리즘 비교
 
@@ -515,7 +943,7 @@ pub trait Analyzer: Send + Sync {
 
 ---
 
-## 5. Alerter 모듈
+## 8. Alerter 모듈
 
 ### 5.1 Alert 구조체
 
@@ -670,7 +1098,148 @@ pub trait AlertChannel: Send + Sync {
 
 ---
 
-## 6. Storage
+## 9. NATS 텔레메트리
+
+### 9.1 개요
+
+NATS는 경량 메시징 시스템으로, SysOps Agent가 메트릭/알림/인벤토리를 중앙 시스템에 전송하는 데 사용됩니다. 기존 알림 채널(Discord, Slack 등)이 **이벤트 기반 알림**이라면, NATS는 **주기적 텔레메트리** 용도입니다.
+
+### 9.2 아키텍처
+
+```
+┌──────────── Agent Side ────────────┐     ┌──────── NATS Server ────────┐
+│                                     │     │                             │
+│  ┌───────────────┐                  │     │  Subject Hierarchy:         │
+│  │ NATS Publisher │                 │     │                             │
+│  │               │   async-nats    │     │  sysops.                    │
+│  │  ┌──────────┐ │   (Rust crate)  │     │  ├── {hostname}.           │
+│  │  │ Metrics  │─┤────────────────▶│────▶│  │   ├── metrics   (30s)   │
+│  │  │ Buffer   │ │   NATS protocol │     │  │   ├── alerts    (event) │
+│  │  ├──────────┤ │   (TCP:4222)    │     │  │   ├── inventory (5min)  │
+│  │  │Inventory │─┤                 │     │  │   └── heartbeat (60s)   │
+│  │  ├──────────┤ │                 │     │  ├── {hostname2}.          │
+│  │  │ Alerts   │─┤                 │     │  │   └── ...               │
+│  │  ├──────────┤ │                 │     │  └── ...                   │
+│  │  │Heartbeat │─┤                 │     │                             │
+│  │  └──────────┘ │                 │     └──────────────┬──────────────┘
+│  └───────────────┘                  │                    │
+│                                     │          subscribe │
+└─────────────────────────────────────┘                    │
+                                                ┌──────────┼──────────┐
+                                                ▼          ▼          ▼
+                                          ┌──────────┐ ┌────────┐ ┌──────┐
+                                          │Dashboard │ │ CMDB   │ │Alert │
+                                          │(Grafana) │ │Invent. │ │Gate  │
+                                          └──────────┘ └────────┘ └──────┘
+```
+
+### 9.3 Subject 설계
+
+```
+sysops.                                  # 최상위 prefix (설정 가능)
+├── {hostname}.metrics                   # 메트릭 배치 (JSON array)
+│     interval: 30초
+│     payload: { hostname, timestamp, metrics: [{name, value, labels}...] }
+│     compression: zstd (optional)
+│
+├── {hostname}.alerts                    # 이상 탐지 알림
+│     trigger: 이벤트 발생 시
+│     payload: { hostname, timestamp, severity, metric, value, message }
+│
+├── {hostname}.inventory                 # 시스템 인벤토리
+│     interval: 300초 (변경 시만 전송, 1시간마다 강제)
+│     payload: SystemInfo (전체 하드웨어/소프트웨어 스펙)
+│
+└── {hostname}.heartbeat                 # 생존 신호
+      interval: 60초
+      payload: { hostname, timestamp, uptime_secs, agent_version, status }
+```
+
+### 9.4 NATS Publisher 구현
+
+```rust
+pub struct NatsPublisher {
+    client: async_nats::Client,
+    subject_prefix: String,
+    hostname: String,
+
+    // 전송 주기 관리
+    metrics_interval: Duration,
+    inventory_interval: Duration,
+    heartbeat_interval: Duration,
+
+    // 배치 버퍼
+    metrics_buffer: Vec<MetricSample>,
+    batch_size: usize,
+
+    // 인벤토리 변경 감지
+    last_inventory_hash: Option<u64>,
+
+    // 압축
+    compression_enabled: bool,
+}
+
+#[async_trait]
+impl NatsPublisher {
+    async fn publish_metrics(&self, metrics: &[MetricSample]) -> Result<()> {
+        let subject = format!("{}.{}.metrics", self.subject_prefix, self.hostname);
+        let payload = serde_json::to_vec(&MetricsBatch {
+            hostname: &self.hostname,
+            timestamp: Utc::now(),
+            metrics,
+        })?;
+
+        let payload = if self.compression_enabled {
+            zstd::encode_all(&payload[..], 3)?
+        } else {
+            payload
+        };
+
+        self.client.publish(subject, payload.into()).await?;
+        Ok(())
+    }
+
+    async fn publish_inventory(&mut self, info: &SystemInfo) -> Result<()> {
+        let payload = serde_json::to_vec(info)?;
+        let hash = hash64(&payload);
+
+        // 변경 감지: hash 같으면 skip
+        if Some(hash) == self.last_inventory_hash {
+            return Ok(());
+        }
+
+        let subject = format!("{}.{}.inventory", self.subject_prefix, self.hostname);
+        self.client.publish(subject, payload.into()).await?;
+        self.last_inventory_hash = Some(hash);
+        Ok(())
+    }
+}
+```
+
+### 9.5 연결 복원력
+
+```
+NATS 연결 끊김 시:
+├── async-nats 자동 재연결 (built-in)
+├── 재연결 동안 메트릭 → 로컬 버퍼 (ring buffer, 최대 1000개)
+├── 재연결 성공 → 버퍼 flush
+├── 버퍼 초과 → oldest drop + 카운트 로그
+└── 재연결 실패 → 다른 기능 (알림 채널, 로컬 모니터링)은 정상 동작
+
+NATS 미설정/비활성 시:
+└── NATS Publisher 미초기화, 다른 모듈에 영향 없음
+```
+
+### 9.6 보안
+
+- **TLS**: `nats://` → 평문, `tls://` → TLS 연결
+- **인증**: Token, User/Password, NKey, JWT/Credentials file 지원
+- **Authorization**: NATS server-side subject permission으로 publish-only 제한
+- **Payload**: 민감 정보(serial number 등) 포함 시 TLS 필수
+
+---
+
+## 10. Storage
 
 ### 6.1 Ring Buffer (In-Memory)
 
@@ -726,7 +1295,7 @@ SQLite (1min avg, 30 days)
 
 ---
 
-## 7. Log Analyzer
+## 11. Log Analyzer
 
 ### 7.1 소스 및 파싱
 
@@ -774,7 +1343,7 @@ SQLite (1min avg, 30 days)
 
 ---
 
-## 8. Security Model
+## 12. Security Model
 
 ### 8.1 최소 권한 원칙
 
@@ -827,7 +1396,7 @@ SQLite (1min avg, 30 days)
 
 ---
 
-## 9. Platform Abstraction
+## 13. Platform Abstraction
 
 ### 9.1 배포판 감지
 
@@ -874,7 +1443,7 @@ impl ProcFs {
 
 ---
 
-## 10. Performance Budget
+## 14. Performance Budget
 
 ### 10.1 메모리 목표
 
@@ -918,7 +1487,7 @@ impl ProcFs {
 
 ---
 
-## 11. 에러 처리 및 복원력
+## 15. 에러 처리 및 복원력
 
 ### 11.1 장애 격리
 
@@ -969,7 +1538,7 @@ SIGHUP 수신
 
 ---
 
-## 12. 확장 포인트
+## 16. 확장 포인트
 
 ### 12.1 커스텀 Collector 추가
 
