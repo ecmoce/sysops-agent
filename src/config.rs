@@ -18,6 +18,9 @@ pub struct Config {
     pub alerting: AlertingConfig,
     #[serde(default)]
     pub prometheus: PrometheusConfig,
+    #[cfg(feature = "nats")]
+    #[serde(default)]
+    pub nats: NatsConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -398,6 +401,46 @@ impl Default for PrometheusConfig {
     }
 }
 
+#[cfg(feature = "nats")]
+#[derive(Debug, Deserialize, Clone)]
+pub struct NatsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_nats_url")]
+    pub url: String,
+    #[serde(default = "default_nats_prefix")]
+    pub subject_prefix: String,
+    #[serde(default = "default_metrics_interval")]
+    pub metrics_interval_secs: u64,
+    #[serde(default = "default_inventory_interval")]
+    pub inventory_interval_secs: u64,
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+    #[serde(default)]
+    pub compression: bool,
+    #[serde(default)]
+    pub credential_file: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+#[cfg(feature = "nats")]
+impl Default for NatsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: default_nats_url(),
+            subject_prefix: default_nats_prefix(),
+            metrics_interval_secs: 30,
+            inventory_interval_secs: 300,
+            heartbeat_interval_secs: 60,
+            compression: false,
+            credential_file: None,
+            token: None,
+        }
+    }
+}
+
 impl Config {
     pub fn load(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)
@@ -463,3 +506,13 @@ fn default_smtp_port() -> u16 { 587 }
 fn default_post() -> String { "POST".to_string() }
 fn default_facility() -> String { "daemon".to_string() }
 fn default_prom_bind() -> String { "127.0.0.1:9100".to_string() }
+#[cfg(feature = "nats")]
+fn default_nats_url() -> String { "nats://localhost:4222".to_string() }
+#[cfg(feature = "nats")]
+fn default_nats_prefix() -> String { "sysops".to_string() }
+#[cfg(feature = "nats")]
+fn default_metrics_interval() -> u64 { 30 }
+#[cfg(feature = "nats")]
+fn default_inventory_interval() -> u64 { 300 }
+#[cfg(feature = "nats")]
+fn default_heartbeat_interval() -> u64 { 60 }

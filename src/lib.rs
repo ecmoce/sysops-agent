@@ -4,6 +4,10 @@ pub mod alerter;
 pub mod config;
 pub mod storage;
 pub mod log_analyzer;
+#[cfg(feature = "nats")]
+pub mod nats_publisher;
+#[cfg(feature = "nats")]
+pub mod inventory;
 
 /// Common types used across modules
 pub mod types {

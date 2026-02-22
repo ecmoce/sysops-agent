@@ -11,7 +11,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /build
 COPY . .
 
-RUN cargo build --release 2>&1
+RUN cargo build --release --features nats 2>&1
 
 RUN ls -lh target/release/sysops-agent
 RUN target/release/sysops-agent --version

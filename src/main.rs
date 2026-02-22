@@ -1,8 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
 use tracing::{info, error};
+#[cfg(feature = "nats")]
+use std::sync::Arc;
 
 use sysops_agent::{collector, analyzer, alerter, config, storage, log_analyzer};
+#[cfg(feature = "nats")]
+use sysops_agent::{nats_publisher, inventory};
 
 #[derive(Parser, Debug)]
 #[command(name = "sysops-agent", about = "Lightweight system monitoring agent")]
@@ -86,6 +90,26 @@ async fn run(config: config::Config) -> Result<()> {
     // Initialize log analyzer
     let log_analyzer = log_analyzer::LogAnalyzer::new(&config)?;
 
+    // Initialize NATS publisher (if enabled)
+    #[cfg(feature = "nats")]
+    let nats_pub = if config.nats.enabled {
+        match nats_publisher::NatsPublisher::new(
+            config.nats.clone(),
+            config.agent.hostname.clone(),
+        ).await {
+            Ok(np) => {
+                info!("NATS publisher initialized");
+                Some(Arc::new(np))
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to initialize NATS publisher, continuing without it");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Create channels
     let (metric_tx, metric_rx) = tokio::sync::mpsc::channel(10_000);
     let (alert_tx, alert_rx) = tokio::sync::mpsc::channel(1_000);
@@ -114,12 +138,18 @@ async fn run(config: config::Config) -> Result<()> {
     }
     drop(metric_tx); // Drop our handle
 
-    // Spawn storage ingestion task
+    // Spawn storage ingestion task (+ NATS metric buffering)
     let storage_handle = storage.clone();
     let alert_tx_clone = alert_tx.clone();
+    #[cfg(feature = "nats")]
+    let nats_for_metrics = nats_pub.clone();
     tokio::spawn(async move {
         let mut rx = metric_rx;
         while let Some(sample) = rx.recv().await {
+            #[cfg(feature = "nats")]
+            if let Some(ref np) = nats_for_metrics {
+                np.buffer_metric(&sample).await;
+            }
             storage_handle.insert(sample);
         }
     });
@@ -163,15 +193,70 @@ async fn run(config: config::Config) -> Result<()> {
     });
     drop(alert_tx);
 
-    // Spawn alerter task
+    // Spawn alerter task (+ NATS alert publishing)
     let mut alert_rx = alert_rx;
+    #[cfg(feature = "nats")]
+    let nats_for_alerts = nats_pub.clone();
     tokio::spawn(async move {
         while let Some(alert) = alert_rx.recv().await {
+            #[cfg(feature = "nats")]
+            if let Some(ref np) = nats_for_alerts {
+                np.publish_alert(&alert).await;
+            }
             if let Err(e) = alerter.dispatch(alert).await {
                 tracing::error!(error = %e, "Alert dispatch failed");
             }
         }
     });
+
+    // Spawn NATS periodic tasks (metrics flush, heartbeat, inventory)
+    #[cfg(feature = "nats")]
+    if let Some(ref np) = nats_pub {
+        // Small delay to let server subscribe first
+        let np_init = np.clone();
+        let proc_root_init = config.agent.proc_root.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            np_init.publish_heartbeat().await;
+            let (hw, sw) = inventory::collect_inventory(&proc_root_init);
+            np_init.publish_inventory(&hw, &sw).await;
+        });
+
+        // Metrics flush loop
+        let np_flush = np.clone();
+        let flush_interval = config.nats.metrics_interval_secs;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(flush_interval));
+            loop {
+                interval.tick().await;
+                np_flush.flush_metrics().await;
+            }
+        });
+
+        // Heartbeat loop
+        let np_hb = np.clone();
+        let hb_interval = config.nats.heartbeat_interval_secs;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(hb_interval));
+            loop {
+                interval.tick().await;
+                np_hb.publish_heartbeat().await;
+            }
+        });
+
+        // Inventory loop
+        let np_inv = np.clone();
+        let inv_interval = config.nats.inventory_interval_secs;
+        let proc_root = config.agent.proc_root.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(inv_interval));
+            loop {
+                interval.tick().await;
+                let (hw, sw) = inventory::collect_inventory(&proc_root);
+                np_inv.publish_inventory(&hw, &sw).await;
+            }
+        });
+    }
 
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
