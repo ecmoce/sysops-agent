@@ -1559,3 +1559,250 @@ SIGHUP 수신
 - **GPU 모니터링** (nvidia-smi 파싱)
 - **Windows 지원** (WMI/Performance Counters)
 - **Auto-remediation** (알림 → 자동 조치: 프로세스 재시작, 로그 정리 등)
+
+---
+
+## 부록 A. 메시징 솔루션 비교 분석
+
+SysOps Agent의 텔레메트리 전송 및 Control Plane 구현을 위해 주요 메시징 솔루션을 다각적으로 비교 분석했습니다.
+
+### A.1 평가 기준
+
+SysOps Agent 유스케이스 요구사항:
+- 수천~수만 에이전트에서 소량 메트릭(JSON 수KB)을 고빈도(10~30초)로 전송
+- 양방향 통신: 텔레메트리(Agent→Server) + 제어(Server→Agent, config push/restart)
+- Agent 경량성: 단일 Rust 바이너리, 리소스 최소화
+- Server 수평 확장: 여러 ingest worker가 부하 분산
+- 운영 단순성: Private Cloud 환경에서 최소 인프라
+
+### A.2 후보 솔루션 7종
+
+#### NATS (현재 선택) ⭐
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  NATS — Cloud-Native Messaging                                   │
+│                                                                   │
+│  아키텍처: Go 단일 바이너리 (<20MB), 내장 클러스터링              │
+│  프로토콜: 자체 텍스트 프로토콜 (매우 경량)                       │
+│  패턴: Pub/Sub + Request-Reply + Queue Groups (모두 네이티브)     │
+│  보장: Core=at-most-once, JetStream=at-least/exactly-once        │
+│  성능: 200K-400K msg/sec (persistent), sub-ms 레이턴시            │
+│  Rust: async-nats (공식, 성숙)                                    │
+│                                                                   │
+│  ✅ Request-Reply → Control Plane에 이상적                        │
+│  ✅ Queue Groups → Server ingest worker 수평 확장 투명             │
+│  ✅ Subject wildcard → sysops.*.metrics 유연한 라우팅              │
+│  ✅ Multi-tenancy (accounts) → 팀/환경 격리                       │
+│  ✅ 운영 복잡도 최소 — ZooKeeper/Erlang 불필요                    │
+│  ⚠️ Kafka 대비 throughput 낮음 (대량 로그에는 부적합)             │
+│  ⚠️ 생태계가 Kafka/RabbitMQ보다 작음                              │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### Apache Kafka
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Kafka — Distributed Commit Log                                   │
+│                                                                   │
+│  아키텍처: JVM 기반, ZooKeeper/KRaft, 최소 3~6노드               │
+│  프로토콜: 자체 바이너리 프로토콜                                  │
+│  패턴: Pub/Sub + Consumer Groups (Request-Reply 없음)             │
+│  보장: at-least-once (기본), exactly-once (트랜잭션)               │
+│  성능: 500K-1M+ msg/sec (배치), 10-50ms 레이턴시                 │
+│  Rust: rdkafka (librdkafka 바인딩, 무거움)                        │
+│                                                                   │
+│  ✅ 최고 throughput, 대용량 데이터 스트리밍 강자                   │
+│  ✅ 영구 저장 + replay, 정확한 순서 보장                           │
+│  ✅ 최대 생태계 (Connect, Streams, ksqlDB)                        │
+│  ❌ Request-Reply 없음 → Control Plane 별도 구현 필요              │
+│  ❌ Agent 측 librdkafka 무거움 (~수MB, C 의존)                    │
+│  ❌ 운영 복잡도 높음 (최소 3노드, partition 관리)                   │
+│  ❌ 10K 에이전트 소량 메트릭에는 과도 (대포로 참새 잡기)           │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### RabbitMQ
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  RabbitMQ — Enterprise Message Broker                             │
+│                                                                   │
+│  아키텍처: Erlang/OTP, 최소 2GB RAM                               │
+│  프로토콜: AMQP 0-9-1 (+ MQTT, STOMP 플러그인)                   │
+│  패턴: Pub/Sub + Work Queues + Direct Reply-to                    │
+│  보장: at-least-once (publisher confirms + consumer acks)          │
+│  성능: 50K-100K msg/sec, 5-20ms 레이턴시                          │
+│  Rust: lapin (AMQP, 보통 성숙도)                                  │
+│                                                                   │
+│  ✅ AMQP 표준, 풍부한 라우팅 (exchange, routing key)               │
+│  ✅ Management UI 내장                                             │
+│  ✅ Quorum queues로 안정적 HA                                      │
+│  ⚠️ Erlang 기반 → NATS의 4-8배 리소스                             │
+│  ⚠️ NATS의 절반 수준 throughput                                    │
+│  ⚠️ AMQP 클라이언트가 NATS보다 복잡                               │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### MQTT (Mosquitto / EMQX)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  MQTT — IoT Standard Protocol                                     │
+│                                                                   │
+│  아키텍처: 경량 브로커 (Mosquitto ~1MB, EMQX=Erlang)              │
+│  프로토콜: MQTT 3.1.1 / 5.0 (2바이트 헤더, 최소 오버헤드)        │
+│  패턴: Pub/Sub only (Request-Reply 없음)                          │
+│  보장: QoS 0(fire-forget) / 1(at-least-once) / 2(exactly-once)   │
+│  성능: 높은 동시 연결 (EMQX: 100M+), 적절한 throughput            │
+│  Rust: rumqttc (성숙)                                              │
+│                                                                   │
+│  ✅ 프로토콜 오버헤드 최소, IoT 표준                               │
+│  ✅ LWT (Last Will and Testament) → 에이전트 오프라인 감지          │
+│  ✅ Retained messages → 마지막 상태 자동 유지                      │
+│  ❌ Request-Reply 없음 → Control Plane 별도 구현                   │
+│  ❌ Queue groups 없음 → Server 수평 확장에 불리                    │
+│  ❌ Persistence/replay가 비표준 (브로커마다 다름)                   │
+│  ❌ 서버 모니터링보다 IoT 센서에 최적화된 설계                     │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### gRPC / OTLP (Direct Streaming)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  gRPC — Direct Agent-to-Server Streaming                          │
+│                                                                   │
+│  아키텍처: 브로커 없음, Agent가 Server에 직접 연결                 │
+│  프로토콜: HTTP/2 + Protobuf (OTLP 표준 가능)                    │
+│  패턴: Unary RPC + Server/Client/Bidirectional Streaming          │
+│  보장: at-most-once (재시도 로직 직접 구현)                        │
+│  성능: 매우 낮은 레이턴시, Protobuf=JSON 대비 ~70% 작음           │
+│  Rust: tonic (성숙, 공식급)                                        │
+│                                                                   │
+│  ✅ 브로커 인프라 불필요                                           │
+│  ✅ Bidirectional streaming → Control Plane에 강력                 │
+│  ✅ Type-safe API (protobuf 코드 생성)                             │
+│  ✅ OpenTelemetry OTLP/OpAMP 표준 호환 가능                       │
+│  ❌ 단일 장애점: Server 다운 시 전체 Agent 전송 실패               │
+│  ❌ 수만 persistent connection을 Server가 직접 관리해야 함         │
+│  ❌ Fan-out/routing/buffering 직접 구현 필요                       │
+│  ❌ Server 수평 확장 시 Agent reconnect 로직 복잡                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**참고: OpAMP (Open Agent Management Protocol)**
+
+OpenTelemetry 프로젝트에서 정의한 에이전트 fleet 관리 표준 프로토콜. Config push, health reporting, 업그레이드 관리를 포함. WebSocket/HTTP 기반. SysOps Agent의 Control Plane 설계 시 참고할 가치가 있으며, 향후 호환 레이어 검토 가능.
+
+#### Direct HTTP Push (Datadog/Telegraf 방식)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  HTTP Push — REST API Direct Push                                 │
+│                                                                   │
+│  아키텍처: 브로커 없음, Agent가 Server REST API에 POST            │
+│  프로토콜: HTTP/1.1 or HTTP/2 + JSON/Protobuf                    │
+│  패턴: 단방향 (Agent→Server만)                                    │
+│                                                                   │
+│  ✅ 구현 최단순, 표준 HTTP                                        │
+│  ✅ Agent 측 reqwest만으로 구현 가능                               │
+│  ❌ 단방향 — Control Plane(Server→Agent) 별도 메커니즘 필요        │
+│  ❌ Server 다운 시 메트릭 유실 (재전송 로직 Agent 부담)            │
+│  ❌ 수만 에이전트 동시 POST → Server HTTP 병목                     │
+│  ❌ Connection per request 비효율 (HTTP/2 필요)                    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### Prometheus Pull Model
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Prometheus Pull — Server Scrapes Agents                          │
+│                                                                   │
+│  아키텍처: Server가 모든 Agent의 /metrics 엔드포인트를 scrape     │
+│  프로토콜: HTTP GET + Prometheus text format                      │
+│                                                                   │
+│  ✅ 업계 표준, Grafana 연동 최적                                   │
+│  ❌ Agent에 수신 포트 필요 → 보안 공격 표면 증가                   │
+│  ❌ NAT/방화벽 뒤의 에이전트 접근 불가                             │
+│  ❌ 10K+ 에이전트 scrape는 실용적이지 않음                         │
+│  ❌ Push 모델인 SysOps와 근본적으로 다른 철학                      │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### A.3 정량 비교표
+
+```
+┌─────────────┬────────┬────────┬────────┬────────┬────────┬────────┐
+│             │  NATS  │ Kafka  │Rabbit  │  MQTT  │  gRPC  │  HTTP  │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ Throughput  │  200K  │  1M+   │ 100K   │ 100K+  │  高    │  中    │
+│ (msg/sec)   │ -400K  │        │        │        │        │        │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ Latency     │ <1ms   │10-50ms │ 5-20ms │ <1ms   │ <1ms   │ 1-5ms  │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ Server      │ <20MB  │ 1GB+   │ 200MB+ │ <10MB  │  N/A   │  N/A   │
+│ Footprint   │        │ (JVM)  │(Erlang)│        │(no brk)│(no brk)│
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ 최소 RAM    │ 64MB   │  4GB+  │  2GB+  │ 64MB   │  N/A   │  N/A   │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ Request-    │   ✅   │   ❌   │   ⚠️   │   ❌   │   ✅   │   ❌   │
+│ Reply       │ native │        │limited │        │bidir   │        │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ Queue       │   ✅   │   ✅   │   ✅   │   ❌   │   ❌   │   ❌   │
+│ Groups      │        │ConsGrp │WorkQ   │        │        │        │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ Persistence │   ✅   │   ✅   │   ✅   │   ⚠️   │   ❌   │   ❌   │
+│             │JetStrm │ native │Quorum  │broker  │        │        │
+│             │        │        │        │specific│        │        │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ 운영 노드   │  1-3   │  3-6+  │  2-3   │  1-3   │   0    │   0    │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ Rust Crate  │async-  │rdkafka │ lapin  │rumqttc │ tonic  │reqwest │
+│             │nats ◉  │ ◉      │ ○      │ ◉      │ ◉      │ ◉      │
+│             │(성숙)  │(C dep) │(보통)  │(성숙)  │(성숙)  │(성숙)  │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ Control     │  ◉◉◉   │  ◉     │  ◉◉    │  ◉     │ ◉◉◉   │  ◉     │
+│ Plane 적합  │req-rep │        │dir-rep │        │bidir   │        │
+├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ SysOps      │ ⭐⭐⭐  │  ⭐    │ ⭐⭐   │  ⭐    │ ⭐⭐   │  ⭐    │
+│ 적합도      │ 최적   │  과도  │  차선  │IoT특화 │소규모ok│ 제한적 │
+└─────────────┴────────┴────────┴────────┴────────┴────────┴────────┘
+```
+
+### A.4 스케일별 권장 솔루션
+
+```
+┌─────────────────────┬──────────────────────────────────────────┐
+│ 에이전트 규모       │ 권장 솔루션                              │
+├─────────────────────┼──────────────────────────────────────────┤
+│ < 100               │ gRPC 직접 연결 또는 NATS 단일 노드       │
+│ 100 ~ 10,000        │ NATS (JetStream) ← SysOps 현재 타겟     │
+│ 10,000 ~ 100,000    │ NATS 클러스터 (3-5 노드)                 │
+│ 100,000+            │ Kafka/Redpanda + 별도 Control Plane      │
+│                     │ (또는 NATS Super Cluster)                 │
+└─────────────────────┴──────────────────────────────────────────┘
+```
+
+### A.5 결론: NATS 선택 근거
+
+SysOps Agent 유스케이스에서 NATS가 최적인 이유:
+
+1. **양방향 통신 네이티브**: Pub/Sub(텔레메트리) + Request-Reply(제어)를 하나의 프로토콜로 해결. Kafka/MQTT는 Request-Reply가 없어 Control Plane을 별도 구현해야 함.
+
+2. **운영 단순성**: 단일 바이너리, 설정 최소, ZooKeeper/Erlang 불필요. Private Cloud 환경에서 운영 팀 부담 최소화.
+
+3. **정확한 스케일 매치**: 10K 에이전트 × 30개 메트릭 × 10초 간격 = ~30K msg/sec. NATS JetStream의 sweet spot (200K-400K 용량의 10-15%).
+
+4. **Agent 경량성**: `async-nats` Rust crate가 순수 Rust로 외부 C 의존 없음. Kafka의 `rdkafka`(librdkafka C 바인딩)와 대조적.
+
+5. **Queue Groups**: Server ingest worker를 여러 인스턴스로 수평 확장할 때, NATS queue group이 자동으로 부하 분산. 코드 변경 없이 확장 가능.
+
+6. **Subject Hierarchy**: `sysops.{hostname}.{metrics|alerts|inventory|heartbeat}` 구조가 NATS의 wildcard 구독(`sysops.>`, `sysops.*.alerts`)과 완벽 매치.
+
+**향후 확장 시 고려사항:**
+- 100K+ 에이전트 도달 시 NATS Super Cluster 또는 Kafka 전환 평가
+- OpenTelemetry OpAMP 프로토콜 호환 레이어 검토 (에이전트 관리 표준화)
+- NATS의 MQTT 브리지를 활용한 IoT 에이전트 통합 가능성
