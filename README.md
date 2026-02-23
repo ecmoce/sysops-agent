@@ -1,6 +1,6 @@
 # 🛡️ SysOps Agent
 
-> **경량 시스템 모니터링 에이전트** — Rust로 작성된 보안 중심의 Linux 서버 모니터링 데몬
+> **Lightweight System Monitoring Agent** — Security-focused Linux server monitoring daemon written in Rust
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -8,64 +8,64 @@
 
 ---
 
-## 📋 목차
+## 📋 Table of Contents
 
-- [개요](#-개요)
-- [아키텍처](#-아키텍처)
-- [기능](#-기능)
-- [빌드](#-빌드)
-- [설치 및 배포](#-설치-및-배포)
-- [설정](#-설정)
-- [알림 채널 설정](#-알림-채널-설정)
-- [NATS 텔레메트리](#-nats-텔레메트리)
-- [사용법](#-사용법)
-- [문서](#-문서)
-- [라이선스](#-라이선스)
-
----
-
-## 관련 프로젝트
-
-| 프로젝트 | 설명 |
-|----------|------|
-| **sysops-agent** | 서버에 설치되는 모니터링 에이전트 (현재 레포) |
-| [sysops-server](https://github.com/ecmoce/sysops-server) | 중앙 데이터 수집/API 서버 |
-| [sysops-console](https://github.com/ecmoce/sysops-console) | 웹 대시보드 UI |
+- [Overview](#-overview)
+- [Architecture](#-architecture)
+- [Features](#-features)
+- [Build](#-build)
+- [Installation & Deployment](#-installation--deployment)
+- [Configuration](#-configuration)
+- [Alert Channel Configuration](#-alert-channel-configuration)
+- [NATS Telemetry](#-nats-telemetry)
+- [Usage](#-usage)
+- [Documentation](#-documentation)
+- [License](#-license)
 
 ---
 
-## 🔍 개요
+## Related Projects
 
-SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소스의 **실시간 이상 탐지**, **트렌드 기반 예측**, **리소스 누수 감지**, **커널/시스템 로그 분석**을 수행합니다. 이상 발견 시 Discord, Slack, Telegram, Email, Webhook, NATS 등 다양한 채널로 즉시 알림을 전송합니다.
+| Project | Description |
+|---------|-------------|
+| **sysops-agent** | Monitoring agent installed on servers (current repo) |
+| [sysops-server](https://github.com/ecmoce/sysops-server) | Central data collection/API server |
+| [sysops-console](https://github.com/ecmoce/sysops-console) | Web dashboard UI |
 
-멀티 CPU 소켓 서버, NVIDIA GPU, NUMA 토폴로지 등 **엔터프라이즈 서버 하드웨어**를 네이티브 지원하며, 시스템 인벤토리(OS, CPU, Memory, GPU 스펙)를 자동 수집하여 NATS를 통해 중앙 관리 시스템에 주기적으로 전송합니다.
+---
 
-### 핵심 특징
+## 🔍 Overview
 
-| 특징 | 설명 |
-|------|------|
-| 🦀 **단일 정적 바이너리** | 런타임 의존성 없음, `scp` 하나로 배포 |
-| ⚡ **초경량** | RSS < 50MB, 유휴 시 CPU < 1% |
-| 🔒 **root 불필요** | Linux capabilities 기반 최소 권한 |
-| 🚫 **수신 포트 없음** | 기본 push-only, 공격 표면 최소화 |
-| 🖥️ **엔터프라이즈 HW** | 멀티소켓 CPU, NVIDIA GPU, NUMA, ECC 메모리 |
-| 📡 **NATS 텔레메트리** | 중앙 집계 시스템으로 메트릭/인벤토리 주기 전송 |
-| 📊 **Prometheus 호환** | opt-in metrics endpoint 제공 |
-| 📝 **TOML 설정** | 직관적이고 문서화된 설정 파일 |
+SysOps Agent runs as a daemon on Linux servers, performing **real-time anomaly detection**, **trend-based prediction**, **resource leak detection**, and **kernel/system log analysis** on system resources. When anomalies are detected, it immediately sends alerts through various channels including Discord, Slack, Telegram, Email, Webhook, NATS, and more.
 
-### 지원 배포판
+It natively supports **enterprise server hardware** including multi-CPU socket servers, NVIDIA GPUs, NUMA topology, and automatically collects system inventory (OS, CPU, Memory, GPU specs) to periodically transmit to central management systems via NATS.
 
-| 배포판 | 버전 | 빌드 검증 |
-|--------|------|-----------|
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| 🦀 **Single Static Binary** | No runtime dependencies, deploy with single `scp` |
+| ⚡ **Ultra-lightweight** | RSS < 50MB, CPU < 1% when idle |
+| 🔒 **No root required** | Linux capabilities-based minimal privileges |
+| 🚫 **No listening ports** | Default push-only, minimal attack surface |
+| 🖥️ **Enterprise HW** | Multi-socket CPU, NVIDIA GPU, NUMA, ECC memory |
+| 📡 **NATS Telemetry** | Periodic transmission of metrics/inventory to central aggregation system |
+| 📊 **Prometheus Compatible** | Opt-in metrics endpoint |
+| 📝 **TOML Configuration** | Intuitive and documented configuration file |
+
+### Supported Distributions
+
+| Distribution | Version | Build Verified |
+|-------------|---------|---------------|
 | Ubuntu | 20.04 / 22.04 / 24.04 | ✅ |
 | Rocky Linux | 8 / 9 | ✅ |
 | CentOS | 7 / 8 / 9 | ✅ |
 
 ---
 
-## 🏗️ 아키텍처
+## 🏗️ Architecture
 
-### 전체 시스템 구성도
+### Overall System Architecture
 
 ```
 ┌──────────────────────────── Linux Server ─────────────────────────────┐
@@ -114,7 +114,7 @@ SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소�
 │  │                                                                 │  │
 │  │  ╔════════════════════════════╗       ┌───────────────────┐    │  │
 │  │  ║   System Inventory         ║──────▶│  📡 NATS Publish  │    │  │
-│  │  ║  • OS release/kernel       ║       │  (주기적 전송)    │    │  │
+│  │  ║  • OS release/kernel       ║       │  (periodic send)  │    │  │
 │  │  ║  • CPU model/sockets/cores ║       └───────────────────┘    │  │
 │  │  ║  • Memory DIMM/ECC spec   ║                                │  │
 │  │  ║  • GPU model/VRAM/driver   ║                                │  │
@@ -129,7 +129,7 @@ SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소�
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-### 데이터 흐름
+### Data Flow
 
 ```
                        10s/30s/60s
@@ -144,10 +144,10 @@ SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소�
                              [Discord]  [Slack]  [Telegram/Email]  [Webhook]   [NATS]
 
 [dmidecode, lscpu, NVML] ────inventory────▶ [SystemInfo] ──publish──▶ [NATS]
-                                                                    (주기: 5분)
+                                                                    (period: 5min)
 ```
 
-### NATS 기반 중앙 집계 토폴로지
+### NATS-based Central Aggregation Topology
 
 ```
  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -162,10 +162,10 @@ SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소�
  │              NATS Server / Cluster               │
  │                                                  │
  │  Subject hierarchy:                              │
- │  sysops.{hostname}.metrics    ← 주기적 메트릭    │
- │  sysops.{hostname}.alerts     ← 이상 알림        │
- │  sysops.{hostname}.inventory  ← 시스템 인벤토리  │
- │  sysops.{hostname}.heartbeat  ← 생존 신호        │
+ │  sysops.{hostname}.metrics    ← periodic metrics │
+ │  sysops.{hostname}.alerts     ← anomaly alerts   │
+ │  sysops.{hostname}.inventory  ← system inventory │
+ │  sysops.{hostname}.heartbeat  ← liveness signals │
  └──────────────────────┬──────────────────────────┘
                         │
           ┌─────────────┼─────────────┐
@@ -178,29 +178,29 @@ SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소�
 
 ---
 
-## ✨ 기능
+## ✨ Features
 
-### 메트릭 수집
+### Metric Collection
 
-| 카테고리 | 메트릭 | 소스 | 주기 |
-|----------|--------|------|------|
-| **CPU** | usage%, per-core, per-socket, iowait, steal, load avg | `/proc/stat`, `/proc/loadavg` | 10초 |
-| **CPU Topology** | socket별 사용률, NUMA node별 통계 | `/sys/devices/system/node/` | 10초 |
-| **Memory** | used%, available, buffers/cached, swap, NUMA per-node | `/proc/meminfo`, `/sys/devices/system/node/*/meminfo` | 10초 |
-| **Memory HW** | ECC 에러 count (correctable/uncorrectable) | `/sys/devices/system/edac/mc*/` | 60초 |
-| **Disk** | usage%, inode%, I/O rate, latency, SMART health | `/proc/diskstats`, `statvfs()` | 10~60초 |
-| **Network** | rx/tx bytes, packets, errors, drops, per-interface | `/proc/net/dev` | 10초 |
-| **GPU (NVIDIA)** | utilization%, memory used/total, temperature, power, ECC | NVML / `nvidia-smi` | 10초 |
-| **Process** | top-N by CPU/RSS, count, zombie count, GPU process | `/proc/[pid]/stat`, NVML | 30초 |
-| **File Descriptors** | system-wide used/max, per-process fd count | `/proc/sys/fs/file-nr` | 30초 |
-| **Kernel** | OOM kills, hardware errors, hung tasks, GPU Xid errors | dmesg, journal, syslog | 실시간 |
+| Category | Metrics | Source | Period |
+|----------|---------|--------|---------|
+| **CPU** | usage%, per-core, per-socket, iowait, steal, load avg | `/proc/stat`, `/proc/loadavg` | 10s |
+| **CPU Topology** | per-socket usage, per-NUMA node statistics | `/sys/devices/system/node/` | 10s |
+| **Memory** | used%, available, buffers/cached, swap, NUMA per-node | `/proc/meminfo`, `/sys/devices/system/node/*/meminfo` | 10s |
+| **Memory HW** | ECC error count (correctable/uncorrectable) | `/sys/devices/system/edac/mc*/` | 60s |
+| **Disk** | usage%, inode%, I/O rate, latency, SMART health | `/proc/diskstats`, `statvfs()` | 10~60s |
+| **Network** | rx/tx bytes, packets, errors, drops, per-interface | `/proc/net/dev` | 10s |
+| **GPU (NVIDIA)** | utilization%, memory used/total, temperature, power, ECC | NVML / `nvidia-smi` | 10s |
+| **Process** | top-N by CPU/RSS, count, zombie count, GPU process | `/proc/[pid]/stat`, NVML | 30s |
+| **File Descriptors** | system-wide used/max, per-process fd count | `/proc/sys/fs/file-nr` | 30s |
+| **Kernel** | OOM kills, hardware errors, hung tasks, GPU Xid errors | dmesg, journal, syslog | real-time |
 
-### 시스템 인벤토리 (자동 수집)
+### System Inventory (Auto-collection)
 
-에이전트 시작 시 및 주기적(기본 5분)으로 시스템 하드웨어/소프트웨어 정보를 수집합니다.
+The agent collects system hardware/software information at startup and periodically (default 5 minutes).
 
-| 카테고리 | 수집 항목 | 소스 |
-|----------|-----------|------|
+| Category | Collected Items | Source |
+|----------|----------------|--------|
 | **OS** | distro, version, kernel version, architecture, hostname | `/etc/os-release`, `uname` |
 | **CPU** | model name, vendor, sockets, cores/socket, threads/core, MHz, cache sizes, flags (avx, sse), microcode | `/proc/cpuinfo`, `lscpu`, `/sys/devices/system/cpu/` |
 | **NUMA** | node count, CPU-to-node mapping, memory per node | `/sys/devices/system/node/` |
@@ -210,7 +210,7 @@ SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소�
 | **Network** | interface name, MAC, speed, MTU, driver, firmware | `/sys/class/net/*/`, `ethtool` |
 | **BIOS/Board** | vendor, version, serial, product name | `/sys/devices/virtual/dmi/id/`, `dmidecode` |
 
-**인벤토리 JSON 예시:**
+**Inventory JSON Example:**
 
 ```json
 {
@@ -268,20 +268,20 @@ SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소�
 }
 ```
 
-### 이상 탐지 알고리즘
+### Anomaly Detection Algorithms
 
-| 알고리즘 | 용도 | 동작 방식 |
-|----------|------|-----------|
-| **Threshold** | 즉시 위험 감지 | 설정 임계값 초과 시 즉시 알림 |
-| **Z-Score** | 통계적 이상 탐지 | 최근 1시간 데이터 기준 3σ 이탈 감지 |
-| **EMA** | 급격한 변화 감지 | Exponential Moving Average 대비 편차 |
-| **Trend (Linear Regression)** | 리소스 소진 예측 | 24시간 내 디스크 풀, 6시간 내 OOM 예측 |
-| **Leak Detection** | FD/메모리 누수 | RSS 단조 증가 + R² > 0.8 패턴 감지 |
+| Algorithm | Purpose | Operation |
+|-----------|---------|-----------|
+| **Threshold** | Immediate danger detection | Instant alert when configured threshold exceeded |
+| **Z-Score** | Statistical anomaly detection | Detect 3σ deviations based on recent 1-hour data |
+| **EMA** | Sudden change detection | Deviation from Exponential Moving Average |
+| **Trend (Linear Regression)** | Resource depletion prediction | Predict disk full in 24h, OOM in 6h |
+| **Leak Detection** | FD/memory leak | RSS monotonic increase + R² > 0.8 pattern detection |
 
-### 로그 분석
+### Log Analysis
 
-| 패턴 | Severity | 예시 |
-|------|----------|------|
+| Pattern | Severity | Example |
+|---------|----------|---------|
 | OOM Kill | 🔴 Critical | `Out of memory: Killed process 1234 (java)` |
 | Hardware Error | 🔴 Critical | `Machine check`, `ECC error`, `EDAC` |
 | GPU Xid Error | 🔴 Critical | `NVRM: Xid ...: 79, pid=1234, GPU has fallen off the bus` |
@@ -294,14 +294,14 @@ SysOps Agent는 Linux 서버에서 데몬으로 실행되며, 시스템 리소�
 
 ---
 
-## 🔨 빌드
+## 🔨 Build
 
-### 요구사항
+### Requirements
 
 - Rust 1.75+ (stable)
-- Linux 또는 cross-compilation 환경
+- Linux or cross-compilation environment
 
-### 기본 빌드
+### Basic Build
 
 ```bash
 cargo build --release
@@ -309,89 +309,89 @@ cargo build --release
 
 ### Feature Flags
 
-기본 빌드는 Core 기능만 포함합니다. 추가 기능은 feature flag로 활성화합니다.
+The default build includes only Core functionality. Additional features are enabled via feature flags.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Feature Flags                                │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  ┌─ Core (기본 포함) ───────────────────────────────────────────┐  │
-│  │  • CPU, Memory, Disk, Network, Process, FD 수집              │  │
-│  │  • Threshold, Z-Score, EMA, Trend, Leak 분석                 │  │
-│  │  • Discord, Slack, Telegram, Email, Webhook, Syslog 알림     │  │
-│  │  • Log Analyzer (dmesg, syslog, journal)                     │  │
-│  │  • System Inventory (OS, CPU, Memory, Disk, Network)         │  │
+│  ┌─ Core (included by default) ─────────────────────────────────┐    │
+│  │  • CPU, Memory, Disk, Network, Process, FD collection       │    │
+│  │  • Threshold, Z-Score, EMA, Trend, Leak analysis            │    │
+│  │  • Discord, Slack, Telegram, Email, Webhook, Syslog alerts  │    │
+│  │  • Log Analyzer (dmesg, syslog, journal)                    │    │
+│  │  • System Inventory (OS, CPU, Memory, Disk, Network)        │    │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 │  ┌─ gpu ──────────────────────────────────────────────────────┐    │
-│  │  NVIDIA GPU 모니터링 (NVML 바인딩)                          │    │
-│  │  • GPU utilization, memory, temperature, power, ECC          │    │
-│  │  • Per-process GPU 사용량, Xid error 감지                    │    │
-│  │  • GPU 인벤토리 (model, VRAM, driver, CUDA version)          │    │
-│  │  ⚠️  런타임 요구: NVIDIA driver + libnvidia-ml.so            │    │
+│  │  NVIDIA GPU monitoring (NVML bindings)                      │    │
+│  │  • GPU utilization, memory, temperature, power, ECC         │    │
+│  │  • Per-process GPU usage, Xid error detection               │    │
+│  │  • GPU inventory (model, VRAM, driver, CUDA version)        │    │
+│  │  ⚠️  Runtime requirement: NVIDIA driver + libnvidia-ml.so   │    │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 │  ┌─ nats ─────────────────────────────────────────────────────┐    │
-│  │  NATS 메시징 지원                                           │    │
-│  │  • 메트릭/알림/인벤토리 주기적 publish                       │    │
-│  │  • Heartbeat (생존 신호)                                     │    │
-│  │  • Subject: sysops.{hostname}.{metrics|alerts|inventory}     │    │
+│  │  NATS messaging support                                     │    │
+│  │  • Periodic publish of metrics/alerts/inventory             │    │
+│  │  • Heartbeat (liveness signals)                             │    │
+│  │  • Subject: sysops.{hostname}.{metrics|alerts|inventory}    │    │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 │  ┌─ prometheus ───────────────────────────────────────────────┐    │
 │  │  Prometheus metrics endpoint (:9100/metrics)                │    │
-│  │  • 모든 수집 메트릭을 Prometheus 형식으로 노출                │    │
+│  │  • Expose all collected metrics in Prometheus format        │    │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 │  ┌─ sqlite ───────────────────────────────────────────────────┐    │
-│  │  장기 메트릭 저장 (SQLite)                                  │    │
-│  │  • 1분 평균 다운샘플링, 30일 보존                            │    │
+│  │  Long-term metric storage (SQLite)                          │    │
+│  │  • 1-minute average downsampling, 30-day retention          │    │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
-│  ┌─ TLS (택 1) ───────────────────────────────────────────────┐    │
-│  │  tls-rustls   순수 Rust TLS (외부 의존성 없음, 권장)        │    │
-│  │  tls-native   OpenSSL 기반 TLS (시스템 CA 인증서 사용)      │    │
+│  ┌─ TLS (choose one) ─────────────────────────────────────────┐    │
+│  │  tls-rustls   Pure Rust TLS (no external deps, recommended) │    │
+│  │  tls-native   OpenSSL-based TLS (use system CA certs)      │    │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**빌드 예시:**
+**Build Examples:**
 
 ```bash
-# 최소 빌드 (Core만, 알림 전용)
+# Minimal build (Core only, alerts only)
 cargo build --release
 
-# GPU 서버용
+# For GPU servers
 cargo build --release --features "gpu,nats,tls-rustls"
 
-# 전체 기능
+# Full features
 cargo build --release --features "gpu,nats,prometheus,sqlite,tls-rustls"
 
-# 모니터링 서버 연동 (NATS + Prometheus)
+# Monitoring server integration (NATS + Prometheus)
 cargo build --release --features "nats,prometheus,sqlite"
 ```
 
-### 정적 바이너리 (musl)
+### Static Binary (musl)
 
 ```bash
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
-# → glibc 버전 무관, 어디서나 실행
+# → glibc version independent, runs anywhere
 ```
 
-### Docker 멀티 OS 빌드
+### Docker Multi-OS Build
 
 ```bash
-# 개별 OS
+# Individual OS
 docker build --platform linux/amd64 -f docker/Dockerfile.ubuntu2204 -t sysops-agent:ubuntu2204 .
 
-# 전체 OS 빌드 & 테스트
+# All OS build & test
 ./scripts/build-test-all.sh
 ```
 
-### 테스트
+### Testing
 
 ```bash
 cargo test
@@ -400,20 +400,20 @@ cargo test --features "gpu,nats,sqlite" -- --test-threads=1
 
 ---
 
-## 📦 설치 및 배포
+## 📦 Installation & Deployment
 
-### 방법 1: 바이너리 직접 복사
+### Method 1: Direct Binary Copy
 
 ```bash
-# 빌드
+# Build
 cargo build --release --target x86_64-unknown-linux-musl --features "gpu,nats,tls-rustls"
 
-# 배포
+# Deploy
 scp target/x86_64-unknown-linux-musl/release/sysops-agent user@server:/usr/local/bin/
 scp config.toml user@server:/etc/sysops-agent/config.toml
 ```
 
-### 방법 2: systemd 서비스
+### Method 2: systemd Service
 
 ```bash
 sudo cp sysops-agent /usr/local/bin/
@@ -426,7 +426,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sysops-agent
 ```
 
-**systemd unit 파일** (`deploy/sysops-agent.service`):
+**systemd unit file** (`deploy/sysops-agent.service`):
 
 ```ini
 [Unit]
@@ -450,14 +450,14 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYSLOG
 AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYSLOG
 ReadOnlyPaths=/proc /sys /var/log
-# GPU 접근 필요 시
+# For GPU access if needed
 SupplementaryGroups=video
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-### 방법 3: Ansible
+### Method 3: Ansible
 
 ```bash
 ansible-playbook -i inventory deploy/ansible/playbook.yml
@@ -465,11 +465,11 @@ ansible-playbook -i inventory deploy/ansible/playbook.yml
 
 ---
 
-## ⚙️ 설정
+## ⚙️ Configuration
 
-설정 파일: `/etc/sysops-agent/config.toml`
+Configuration file: `/etc/sysops-agent/config.toml`
 
-### 최소 설정
+### Minimal Configuration
 
 ```toml
 [agent]
@@ -485,7 +485,7 @@ enabled = true
 webhook_url = "https://discord.com/api/webhooks/YOUR/WEBHOOK"
 ```
 
-### 전체 설정 예시
+### Full Configuration Example
 
 ```toml
 [agent]
@@ -495,7 +495,7 @@ log_level = "info"                    # trace, debug, info, warn, error
 data_dir = "/var/lib/sysops-agent"
 pid_file = "/var/run/sysops-agent.pid"
 
-# ─── 수집 주기 ───
+# ─── Collection Intervals ───
 [collector]
 cpu_interval_secs = 10
 memory_interval_secs = 10
@@ -503,20 +503,20 @@ disk_interval_secs = 60
 network_interval_secs = 10
 process_interval_secs = 30
 fd_interval_secs = 30
-gpu_interval_secs = 10                # feature "gpu" 필요
+gpu_interval_secs = 10                # requires feature "gpu"
 
-# ─── 시스템 인벤토리 ───
+# ─── System Inventory ───
 [inventory]
 enabled = true
-collect_interval_secs = 300           # 5분마다 수집/전송
-include_dimm_details = true           # DIMM 상세 정보 (dmidecode, root 필요)
-include_smart = false                 # SMART 정보 (smartctl, root 필요)
-include_bios = true                   # BIOS/보드 정보
+collect_interval_secs = 300           # collect/send every 5 minutes
+include_dimm_details = true           # DIMM details (dmidecode, requires root)
+include_smart = false                 # SMART info (smartctl, requires root)
+include_bios = true                   # BIOS/board info
 
-# ─── 임계값 ───
+# ─── Thresholds ───
 [thresholds]
 cpu_percent = 90.0
-cpu_per_socket_percent = 95.0         # 소켓별 임계값
+cpu_per_socket_percent = 95.0         # per-socket threshold
 memory_percent = 85.0
 disk_percent = 90.0
 disk_inode_percent = 85.0
@@ -524,19 +524,19 @@ fd_percent = 80.0
 load_avg_multiplier = 2.0             # load > (CPU cores × multiplier)
 network_error_rate = 0.01
 
-# GPU 임계값 (feature "gpu")
+# GPU thresholds (feature "gpu")
 gpu_utilization_percent = 95.0
 gpu_memory_percent = 90.0
-gpu_temperature_celsius = 85.0        # thermal throttling 전 알림
-gpu_power_percent = 95.0              # power limit 대비
+gpu_temperature_celsius = 85.0        # alert before thermal throttling
+gpu_power_percent = 95.0              # vs power limit
 
-# ─── 멀티 소켓 / NUMA ───
+# ─── Multi-socket / NUMA ───
 [cpu]
-per_socket_monitoring = true          # 소켓별 분리 모니터링
-numa_monitoring = true                # NUMA node별 메모리 통계
-ecc_monitoring = true                 # EDAC ECC 에러 카운트
+per_socket_monitoring = true          # separate monitoring per socket
+numa_monitoring = true                # per-NUMA node memory stats
+ecc_monitoring = true                 # EDAC ECC error count
 
-# ─── 분석기 ───
+# ─── Analyzers ───
 [analyzer]
 zscore_window = 360
 zscore_threshold = 3.0
@@ -545,38 +545,38 @@ trend_window_hours = 6
 leak_min_observation_hours = 1
 leak_r_squared_threshold = 0.8
 
-# ─── 저장소 ───
+# ─── Storage ───
 [storage]
 ring_buffer_capacity = 8640
-sqlite_enabled = false                # feature "sqlite" 필요
+sqlite_enabled = false                # requires feature "sqlite"
 sqlite_path = "/var/lib/sysops-agent/metrics.db"
 sqlite_retention_days = 30
 
-# ─── 로그 분석 ───
+# ─── Log Analysis ───
 [log_analyzer]
 enabled = true
 sources = ["dmesg", "syslog"]
 syslog_path = "/var/log/syslog"
-gpu_xid_monitoring = true             # NVIDIA Xid error 감지
+gpu_xid_monitoring = true             # NVIDIA Xid error detection
 custom_patterns = [
     { pattern = "FATAL.*database", severity = "critical", name = "db_fatal" },
     { pattern = "connection refused", severity = "warn", name = "conn_refused" },
 ]
 
-# ─── NATS 텔레메트리 (feature "nats") ───
+# ─── NATS Telemetry (feature "nats") ───
 [nats]
 enabled = true
-url = "nats://nats-server:4222"       # NATS 서버 주소
-# urls = ["nats://n1:4222", "nats://n2:4222"]  # 클러스터
-credential_file = "/etc/sysops-agent/nats.creds"  # 인증 (optional)
-# token = "${NATS_TOKEN}"             # 토큰 인증
+url = "nats://nats-server:4222"       # NATS server address
+# urls = ["nats://n1:4222", "nats://n2:4222"]  # cluster
+credential_file = "/etc/sysops-agent/nats.creds"  # auth (optional)
+# token = "${NATS_TOKEN}"             # token auth
 subject_prefix = "sysops"             # → sysops.{hostname}.*
-metrics_interval_secs = 30            # 메트릭 전송 주기
-inventory_interval_secs = 300         # 인벤토리 전송 주기
-heartbeat_interval_secs = 60          # 생존 신호 주기
-include_alerts = true                 # 알림도 NATS로 전송
-batch_size = 100                      # 메트릭 배치 크기
-compression = true                    # 페이로드 압축 (zstd)
+metrics_interval_secs = 30            # metrics transmission period
+inventory_interval_secs = 300         # inventory transmission period
+heartbeat_interval_secs = 60          # heartbeat period
+include_alerts = true                 # also send alerts to NATS
+batch_size = 100                      # metric batch size
+compression = true                    # payload compression (zstd)
 
 # ─── Prometheus (feature "prometheus") ───
 [prometheus]
@@ -584,7 +584,7 @@ enabled = false
 bind = "127.0.0.1:9100"
 path = "/metrics"
 
-# ─── 알림 공통 설정 ───
+# ─── Common Alert Settings ───
 [alerting]
 min_interval_secs = 300
 max_alerts_per_hour = 60
@@ -594,9 +594,9 @@ emergency_bypass_rate_limit = true
 
 ---
 
-## 📡 알림 채널 설정
+## 📡 Alert Channel Configuration
 
-### 채널별 설정 방법
+### Channel-specific Configuration
 
 #### 1. 📱 Discord (Webhook)
 
@@ -607,18 +607,18 @@ emergency_bypass_rate_limit = true
 └─────────────┘                        └──────┬───────┘
                                               ▼
                                        ┌──────────────┐
-                                       │  #alerts 채널 │
+                                       │  #alerts channel │
                                        └──────────────┘
 ```
 
-**설정:** Discord 서버 → 채널 설정 → 연동 → Webhook → URL 복사
+**Setup:** Discord Server → Channel Settings → Integrations → Webhooks → Copy URL
 
 ```toml
 [alerting.discord]
 enabled = true
 webhook_url = "https://discord.com/api/webhooks/1234567890/abcdefgh"
 username = "SysOps Agent"
-mention_roles = ["@devops"]           # Critical 이상 시 멘션
+mention_roles = ["@devops"]           # mention on Critical+
 ```
 
 #### 2. 💬 Slack (Webhook)
@@ -631,7 +631,7 @@ mention_roles = ["@devops"]           # Critical 이상 시 멘션
                                        └──────────────┘
 ```
 
-**설정:** Slack App → Incoming Webhooks 활성화 → 채널 선택
+**Setup:** Slack App → Incoming Webhooks enabled → Select channel
 
 ```toml
 [alerting.slack]
@@ -650,7 +650,7 @@ mention_users = ["U12345"]
 └─────────────┘                        └──────────────┘
 ```
 
-**설정:** @BotFather → `/newbot` → Token + Chat ID
+**Setup:** @BotFather → `/newbot` → Token + Chat ID
 
 ```toml
 [alerting.telegram]
@@ -673,7 +673,7 @@ password = "${SMTP_PASSWORD}"
 from = "SysOps Agent <alerts@company.com>"
 to = ["devops@company.com", "oncall@company.com"]
 subject_prefix = "[SysOps]"
-min_severity = "critical"             # Critical 이상만 이메일
+min_severity = "critical"             # Critical+ only for email
 ```
 
 #### 5. 🔗 Custom Webhook
@@ -711,7 +711,7 @@ facility = "daemon"
 tag = "sysops-agent"
 ```
 
-### Severity 라우팅
+### Severity Routing
 
 ```
 ┌───────────┬─────────┬───────┬──────────┬───────┬─────────┬────────┬──────┐
@@ -727,20 +727,20 @@ tag = "sysops-agent"
 
 ---
 
-## 📡 NATS 텔레메트리
+## 📡 NATS Telemetry
 
-NATS 채널은 단방향 알림이 아닌, **주기적 텔레메트리 전송** 용도입니다. 메트릭, 인벤토리, 알림, 하트비트를 NATS subject로 publish하여 중앙 관리 시스템에서 구독합니다.
+The NATS channel is not for one-way alerts, but for **periodic telemetry transmission**. It publishes metrics, inventory, alerts, and heartbeats to NATS subjects for subscription by central management systems.
 
-### Subject 구조
+### Subject Structure
 
 ```
-sysops.{hostname}.metrics      메트릭 배치 (30초마다)
-sysops.{hostname}.alerts       이상 탐지 알림 (발생 시)
-sysops.{hostname}.inventory    시스템 인벤토리 (5분마다)
-sysops.{hostname}.heartbeat    생존 신호 (1분마다)
+sysops.{hostname}.metrics      metric batches (every 30s)
+sysops.{hostname}.alerts       anomaly detection alerts (on occurrence)
+sysops.{hostname}.inventory    system inventory (every 5 min)
+sysops.{hostname}.heartbeat    liveness signals (every 1 min)
 ```
 
-### 전송 데이터 형식
+### Transmitted Data Format
 
 **Heartbeat** (`sysops.gpu-server-01.heartbeat`):
 ```json
@@ -774,73 +774,73 @@ sysops.{hostname}.heartbeat    생존 신호 (1분마다)
 ```
 
 **Inventory** (`sysops.gpu-server-01.inventory`):
-전체 시스템 인벤토리 JSON (위 "시스템 인벤토리" 섹션 참조)
+Full system inventory JSON (see "System Inventory" section above)
 
-### NATS 설정 예시
+### NATS Configuration Example
 
 ```toml
 [nats]
 enabled = true
 url = "nats://nats-server:4222"
 
-# 클러스터 구성
+# Cluster configuration
 # urls = ["nats://n1:4222", "nats://n2:4222", "nats://n3:4222"]
 
-# 인증
-# credential_file = "/etc/sysops-agent/nats.creds"   # NKey 인증
-# token = "${NATS_TOKEN}"                             # 토큰 인증
-# user = "sysops"                                     # 사용자/비밀번호
+# Authentication
+# credential_file = "/etc/sysops-agent/nats.creds"   # NKey auth
+# token = "${NATS_TOKEN}"                             # token auth
+# user = "sysops"                                     # user/password
 # password = "${NATS_PASSWORD}"
 
-# Subject 설정
+# Subject configuration
 subject_prefix = "sysops"              # → sysops.{hostname}.*
 
-# 전송 주기
-metrics_interval_secs = 30             # 메트릭 (기본 30초)
-inventory_interval_secs = 300          # 인벤토리 (기본 5분)
-heartbeat_interval_secs = 60           # 하트비트 (기본 1분)
+# Transmission periods
+metrics_interval_secs = 30             # metrics (default 30s)
+inventory_interval_secs = 300          # inventory (default 5min)
+heartbeat_interval_secs = 60           # heartbeat (default 1min)
 
-# 최적화
-batch_size = 100                       # 메트릭 배치 크기
-compression = true                     # zstd 압축 (대역폭 절약)
-max_reconnect_attempts = -1            # 무한 재연결
+# Optimization
+batch_size = 100                       # metric batch size
+compression = true                     # zstd compression (bandwidth saving)
+max_reconnect_attempts = -1            # infinite reconnection
 reconnect_delay_secs = 5
 ```
 
-### 중앙 구독 예시 (Go/Python)
+### Central Subscription Example (Go/Python)
 
 ```bash
-# nats CLI로 구독 테스트
-nats sub "sysops.>"                    # 모든 에이전트
-nats sub "sysops.gpu-server-01.>"      # 특정 서버
-nats sub "sysops.*.alerts"             # 모든 서버의 알림만
+# Subscribe test with nats CLI
+nats sub "sysops.>"                    # all agents
+nats sub "sysops.gpu-server-01.>"      # specific server
+nats sub "sysops.*.alerts"             # alerts from all servers only
 ```
 
 ---
 
-## 🚀 사용법
+## 🚀 Usage
 
-### CLI 명령어
+### CLI Commands
 
 ```bash
-# 기본 실행
+# Basic execution
 sysops-agent --config /etc/sysops-agent/config.toml
 
-# foreground + 디버깅
+# Foreground + debugging
 sysops-agent --config config.toml --log-level debug
 
-# 설정 검증만
+# Configuration validation only
 sysops-agent --config config.toml --validate
 
-# 인벤토리 1회 출력 (설치 확인용)
+# One-time inventory output (for installation verification)
 sysops-agent --config config.toml --inventory-dump
 
-# 버전/도움말
+# Version/help
 sysops-agent --version
 sysops-agent --help
 ```
 
-### systemd 서비스 관리
+### systemd Service Management
 
 ```bash
 sudo systemctl start sysops-agent
@@ -848,7 +848,7 @@ sudo systemctl status sysops-agent
 journalctl -u sysops-agent -f
 ```
 
-### Prometheus 연동 (optional)
+### Prometheus Integration (optional)
 
 ```bash
 curl http://localhost:9100/metrics
@@ -856,25 +856,25 @@ curl http://localhost:9100/metrics
 
 ---
 
-## 📚 문서
+## 📚 Documentation
 
-| 문서 | 설명 |
-|------|------|
-| [DESIGN.md](docs/DESIGN.md) | 아키텍처 및 상세 설계 (알고리즘, 보안 모델, 성능) |
-| [METRICS.md](docs/METRICS.md) | 수집 메트릭 카탈로그 (80+ 메트릭) |
-| [ALERTING.md](docs/ALERTING.md) | 알림 시스템 상세 설계 |
-| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | 배포 가이드 (systemd, RPM, DEB, Ansible) |
-| [CONFIGURATION.md](docs/CONFIGURATION.md) | 전체 설정 레퍼런스 |
-| [BUILD-TEST-RESULTS.md](docs/BUILD-TEST-RESULTS.md) | OS별 빌드/테스트 결과 |
+| Document | Description |
+|----------|-------------|
+| [DESIGN.md](docs/DESIGN.md) | Architecture and detailed design (algorithms, security model, performance) |
+| [METRICS.md](docs/METRICS.md) | Collected metrics catalog (80+ metrics) |
+| [ALERTING.md](docs/ALERTING.md) | Alert system detailed design |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Deployment guide (systemd, RPM, DEB, Ansible) |
+| [CONFIGURATION.md](docs/CONFIGURATION.md) | Complete configuration reference |
+| [BUILD-TEST-RESULTS.md](docs/BUILD-TEST-RESULTS.md) | Per-OS build/test results |
 
 ---
 
 ## 🤝 Contributing
 
 1. Fork → Branch → PR
-2. `cargo fmt && cargo clippy` 통과 필수
-3. 새 메트릭 추가 시 METRICS.md 업데이트
+2. Must pass `cargo fmt && cargo clippy`
+3. Update METRICS.md when adding new metrics
 
-## 📄 라이선스
+## 📄 License
 
 MIT License — [LICENSE](LICENSE)

@@ -1,6 +1,6 @@
-# 배포 가이드
+# Deployment Guide
 
-## 1. systemd Unit 파일
+## 1. systemd Unit File
 
 ```ini
 # /etc/systemd/system/sysops-agent.service
@@ -37,7 +37,7 @@ MemoryDenyWriteExecute=yes
 ReadOnlyPaths=/
 ReadWritePaths=/var/lib/sysops-agent /var/log/sysops-agent
 
-# procfs 접근 허용
+# Allow procfs access
 ProtectProc=invisible
 ProcSubset=all
 
@@ -54,32 +54,32 @@ CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYSLOG
 WantedBy=multi-user.target
 ```
 
-### 설치 스크립트
+### Installation Script
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 
-# 사용자 생성
+# Create user
 useradd --system --no-create-home --shell /sbin/nologin sysops-agent
 
-# 디렉토리 생성
+# Create directories
 mkdir -p /etc/sysops-agent /var/lib/sysops-agent /var/log/sysops-agent
 chown sysops-agent:sysops-agent /var/lib/sysops-agent /var/log/sysops-agent
 
-# 바이너리 복사
+# Copy binary
 cp sysops-agent /usr/local/bin/
 chmod 755 /usr/local/bin/sysops-agent
 
-# 설정 파일 복사 (이미 존재하면 건너뜀)
+# Copy config file (skip if already exists)
 [ -f /etc/sysops-agent/config.toml ] || cp config.toml.example /etc/sysops-agent/config.toml
 chmod 600 /etc/sysops-agent/config.toml
 chown sysops-agent:sysops-agent /etc/sysops-agent/config.toml
 
-# Capabilities 설정
+# Set capabilities
 setcap 'cap_dac_read_search,cap_syslog=ep' /usr/local/bin/sysops-agent
 
-# systemd 등록
+# Register with systemd
 cp sysops-agent.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now sysops-agent
@@ -92,7 +92,7 @@ systemctl enable --now sysops-agent
 Name:           sysops-agent
 Version:        0.1.0
 Release:        1%{?dist}
-Summary:        경량 시스템 모니터링 에이전트
+Summary:        Lightweight system monitoring agent
 License:        MIT
 URL:            https://github.com/ecmoce/sysops-agent
 
@@ -102,8 +102,8 @@ BuildRequires:  rust >= 1.75
 BuildRequires:  cargo
 
 %description
-SysOps Agent는 Linux 서버용 경량 시스템 모니터링 데몬입니다.
-실시간 이상 탐지, 트렌드 분석, 리소스 누수 감지, 커널 로그 분석을 수행합니다.
+SysOps Agent is a lightweight system monitoring daemon for Linux servers.
+Performs real-time anomaly detection, trend analysis, resource leak detection, and kernel log analysis.
 
 %prep
 %setup -q
@@ -135,7 +135,7 @@ systemctl enable sysops-agent
 %dir /var/log/%{name}
 ```
 
-## 3. DEB 패키징 (Ubuntu)
+## 3. DEB Packaging (Ubuntu)
 
 ```
 debian/
@@ -154,8 +154,8 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: SysOps <admin@example.com>
-Description: 경량 시스템 모니터링 에이전트
- Rust로 작성된 Linux 서버 모니터링 데몬.
+Description: Lightweight system monitoring agent
+ Linux server monitoring daemon written in Rust.
 ```
 
 ## 4. Ansible Playbook Skeleton
@@ -235,9 +235,9 @@ Description: 경량 시스템 모니터링 에이전트
         state: restarted
 ```
 
-## 5. Docker (테스트 용도)
+## 5. Docker (For Testing)
 
-> ⚠️ **프로덕션에서는 Docker 사용을 권장하지 않습니다.** 컨테이너 내부에서 호스트의 procfs/sysfs 접근이 제한됩니다.
+> ⚠️ **Docker is not recommended for production use.** Container access to host procfs/sysfs is limited.
 
 ```dockerfile
 # Dockerfile
@@ -256,7 +256,7 @@ CMD ["--config", "/etc/sysops-agent/config.toml"]
 ```
 
 ```bash
-# 테스트 실행 (호스트 procfs 마운트 필요)
+# Test run (requires host procfs mount)
 docker run -d \
   --name sysops-agent \
   -v /proc:/host/proc:ro \

@@ -1,78 +1,78 @@
-# 설정 레퍼런스
+# Configuration Reference
 
-SysOps Agent는 TOML 형식의 설정 파일을 사용합니다. 환경 변수 참조는 `${ENV_VAR}` 문법을 지원합니다.
+SysOps Agent uses TOML format configuration files. Environment variable references support `${ENV_VAR}` syntax.
 
-## 전체 설정 옵션
+## All Configuration Options
 
-### `[agent]` — 에이전트 기본 설정
+### `[agent]` — Agent Basic Configuration
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `hostname` | string | 시스템 hostname | 알림에 표시될 호스트 이름 |
-| `log_level` | string | `"info"` | 로그 레벨: trace, debug, info, warn, error |
-| `log_file` | string | — | 로그 파일 경로 (미설정 시 stderr) |
-| `pid_file` | string | — | PID 파일 경로 |
-| `data_dir` | string | `"/var/lib/sysops-agent"` | 데이터 저장 디렉토리 |
-| `proc_root` | string | `"/proc"` | procfs 마운트 경로 |
-| `sys_root` | string | `"/sys"` | sysfs 마운트 경로 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `hostname` | string | system hostname | Host name to display in alerts |
+| `log_level` | string | `"info"` | Log level: trace, debug, info, warn, error |
+| `log_file` | string | — | Log file path (stderr if not set) |
+| `pid_file` | string | — | PID file path |
+| `data_dir` | string | `"/var/lib/sysops-agent"` | Data storage directory |
+| `proc_root` | string | `"/proc"` | procfs mount path |
+| `sys_root` | string | `"/sys"` | sysfs mount path |
 
-### `[collector]` — 수집기 설정
+### `[collector]` — Collector Configuration
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `default_interval_secs` | u64 | `10` | 기본 수집 주기 (초) |
-| `enabled_collectors` | string[] | 전체 | 활성화할 collector 목록 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default_interval_secs` | u64 | `10` | Default collection interval (seconds) |
+| `enabled_collectors` | string[] | all | List of collectors to enable |
 
 ### `[collector.cpu]`
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `enabled` | bool | `true` | CPU 수집 활성화 |
-| `interval_secs` | u64 | `10` | 수집 주기 |
-| `per_core` | bool | `true` | 코어별 수집 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable CPU collection |
+| `interval_secs` | u64 | `10` | Collection interval |
+| `per_core` | bool | `true` | Per-core collection |
 
 ### `[collector.memory]`
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `enabled` | bool | `true` | 메모리 수집 활성화 |
-| `interval_secs` | u64 | `10` | 수집 주기 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable memory collection |
+| `interval_secs` | u64 | `10` | Collection interval |
 
 ### `[collector.disk]`
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `enabled` | bool | `true` | 디스크 수집 활성화 |
-| `interval_secs` | u64 | `60` | 사용량 수집 주기 |
-| `io_interval_secs` | u64 | `10` | I/O 통계 수집 주기 |
-| `exclude_fstypes` | string[] | `["tmpfs", "devtmpfs", "sysfs", "proc"]` | 제외할 파일시스템 타입 |
-| `exclude_mountpoints` | string[] | `[]` | 제외할 마운트 포인트 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable disk collection |
+| `interval_secs` | u64 | `60` | Usage collection interval |
+| `io_interval_secs` | u64 | `10` | I/O statistics collection interval |
+| `exclude_fstypes` | string[] | `["tmpfs", "devtmpfs", "sysfs", "proc"]` | Filesystem types to exclude |
+| `exclude_mountpoints` | string[] | `[]` | Mount points to exclude |
 
 ### `[collector.network]`
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `enabled` | bool | `true` | 네트워크 수집 활성화 |
-| `interval_secs` | u64 | `10` | 수집 주기 |
-| `exclude_interfaces` | string[] | `["lo"]` | 제외할 인터페이스 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable network collection |
+| `interval_secs` | u64 | `10` | Collection interval |
+| `exclude_interfaces` | string[] | `["lo"]` | Interfaces to exclude |
 
 ### `[collector.process]`
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `enabled` | bool | `true` | 프로세스 수집 활성화 |
-| `interval_secs` | u64 | `30` | 수집 주기 |
-| `track_patterns` | string[] | `[]` | 추적할 프로세스 이름 패턴 |
-| `track_top_n` | u32 | `20` | RSS 기준 상위 N개 추적 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable process collection |
+| `interval_secs` | u64 | `30` | Collection interval |
+| `track_patterns` | string[] | `[]` | Process name patterns to track |
+| `track_top_n` | u32 | `20` | Track top N by RSS |
 
 ### `[collector.log]`
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `enabled` | bool | `true` | 로그 분석 활성화 |
-| `sources` | string[] | `["dmesg", "syslog"]` | 분석 소스 |
-| `syslog_path` | string | 자동 감지 | syslog 파일 경로 |
-| `custom_patterns` | table[] | `[]` | 커스텀 패턴 목록 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable log analysis |
+| `sources` | string[] | `["dmesg", "syslog"]` | Analysis sources |
+| `syslog_path` | string | auto-detect | syslog file path |
+| `custom_patterns` | table[] | `[]` | Custom pattern list |
 
 ```toml
 [[collector.log.custom_patterns]]
@@ -81,59 +81,59 @@ pattern = "MyApp.*FATAL"
 severity = "critical"
 ```
 
-### `[thresholds]` — 임계값 설정
+### `[thresholds]` — Threshold Configuration
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `cpu_warn_percent` | f64 | `80.0` | CPU 경고 임계값 |
-| `cpu_critical_percent` | f64 | `95.0` | CPU 위험 임계값 |
-| `memory_warn_percent` | f64 | `80.0` | 메모리 경고 임계값 |
-| `memory_critical_percent` | f64 | `90.0` | 메모리 위험 임계값 |
-| `disk_warn_percent` | f64 | `80.0` | 디스크 경고 임계값 |
-| `disk_critical_percent` | f64 | `90.0` | 디스크 위험 임계값 |
-| `fd_warn_percent` | f64 | `80.0` | FD 경고 임계값 |
-| `fd_critical_percent` | f64 | `95.0` | FD 위험 임계값 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `cpu_warn_percent` | f64 | `80.0` | CPU warning threshold |
+| `cpu_critical_percent` | f64 | `95.0` | CPU critical threshold |
+| `memory_warn_percent` | f64 | `80.0` | Memory warning threshold |
+| `memory_critical_percent` | f64 | `90.0` | Memory critical threshold |
+| `disk_warn_percent` | f64 | `80.0` | Disk warning threshold |
+| `disk_critical_percent` | f64 | `90.0` | Disk critical threshold |
+| `fd_warn_percent` | f64 | `80.0` | FD warning threshold |
+| `fd_critical_percent` | f64 | `95.0` | FD critical threshold |
 
-### `[analyzer]` — 분석기 설정
+### `[analyzer]` — Analyzer Configuration
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `zscore_window` | u32 | `360` | Z-Score 윈도우 크기 (샘플 수) |
-| `zscore_threshold` | f64 | `3.0` | Z-Score 이상 판정 기준 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `zscore_window` | u32 | `360` | Z-Score window size (sample count) |
+| `zscore_threshold` | f64 | `3.0` | Z-Score anomaly detection threshold |
 | `ema_alpha` | f64 | `0.1` | EMA smoothing factor |
-| `trend_window_hours` | u32 | `6` | 트렌드 분석 윈도우 (시간) |
-| `leak_min_observation_mins` | u32 | `30` | 누수 감지 최소 관찰 시간 |
-| `leak_r_squared_threshold` | f64 | `0.8` | 누수 판정 R² 최소값 |
+| `trend_window_hours` | u32 | `6` | Trend analysis window (hours) |
+| `leak_min_observation_mins` | u32 | `30` | Leak detection minimum observation time |
+| `leak_r_squared_threshold` | f64 | `0.8` | Leak detection R² minimum value |
 
-### `[storage]` — 저장 설정
+### `[storage]` — Storage Configuration
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `ring_buffer_size` | u32 | `8640` | 메트릭당 ring buffer 크기 |
-| `sqlite_enabled` | bool | `false` | SQLite 영속 저장 활성화 (feature 필요) |
-| `sqlite_path` | string | `"data_dir/metrics.db"` | SQLite DB 경로 |
-| `sqlite_retention_days` | u32 | `30` | SQLite 보존 기간 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ring_buffer_size` | u32 | `8640` | Ring buffer size per metric |
+| `sqlite_enabled` | bool | `false` | Enable SQLite persistent storage (requires feature) |
+| `sqlite_path` | string | `"data_dir/metrics.db"` | SQLite DB path |
+| `sqlite_retention_days` | u32 | `30` | SQLite retention period |
 
-### `[alerting]` — 알림 공통 설정
+### `[alerting]` — Common Alert Configuration
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `rate_limit_per_minute` | u32 | `10` | 채널당 분당 최대 알림 수 |
-| `rate_limit_per_hour` | u32 | `60` | 채널당 시간당 최대 알림 수 |
-| `dedup_window_secs` | u64 | `300` | 중복 억제 윈도우 (초) |
-| `group_window_secs` | u64 | `30` | 알림 그룹핑 윈도우 (초) |
-| `recovery_enabled` | bool | `true` | 복구 알림 활성화 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `rate_limit_per_minute` | u32 | `10` | Max alerts per channel per minute |
+| `rate_limit_per_hour` | u32 | `60` | Max alerts per channel per hour |
+| `dedup_window_secs` | u64 | `300` | Deduplication window (seconds) |
+| `group_window_secs` | u64 | `30` | Alert grouping window (seconds) |
+| `recovery_enabled` | bool | `true` | Enable recovery alerts |
 
-### `[prometheus]` — Prometheus Endpoint (feature 필요)
+### `[prometheus]` — Prometheus Endpoint (requires feature)
 
-| 키 | 타입 | 기본값 | 설명 |
-|----|------|--------|------|
-| `enabled` | bool | `false` | Prometheus endpoint 활성화 |
-| `bind` | string | `"127.0.0.1:9100"` | 바인딩 주소 |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Prometheus endpoint |
+| `bind` | string | `"127.0.0.1:9100"` | Bind address |
 
 ---
 
-## 예제 설정: 최소
+## Example Configuration: Minimal
 
 ```toml
 [agent]
@@ -149,7 +149,7 @@ enabled = true
 webhook_url = "${DISCORD_WEBHOOK_URL}"
 ```
 
-## 예제 설정: 전체
+## Example Configuration: Full
 
 ```toml
 [agent]
@@ -257,7 +257,7 @@ enabled = true
 bind = "127.0.0.1:9100"
 ```
 
-## 예제 설정: 고보안
+## Example Configuration: High Security
 
 ```toml
 [agent]
@@ -265,7 +265,7 @@ hostname = "secure-server"
 log_level = "warn"
 data_dir = "/var/lib/sysops-agent"
 
-# 최소 수집만 활성화
+# Enable minimal collection only
 [collector.cpu]
 enabled = true
 per_core = false
@@ -277,14 +277,14 @@ enabled = true
 enabled = true
 
 [collector.network]
-enabled = false  # 네트워크 메트릭 불필요 시 비활성
+enabled = false  # Disable if network metrics unnecessary
 
 [collector.process]
-enabled = false  # 프로세스 추적 비활성
+enabled = false  # Disable process tracking
 
 [collector.log]
 enabled = true
-sources = ["dmesg"]  # syslog 접근 불필요 시
+sources = ["dmesg"]  # If syslog access unnecessary
 
 [thresholds]
 cpu_critical_percent = 90.0
@@ -292,17 +292,17 @@ memory_critical_percent = 85.0
 disk_critical_percent = 85.0
 
 [storage]
-sqlite_enabled = false  # 디스크에 데이터 저장 안 함
+sqlite_enabled = false  # No data storage on disk
 
 [alerting]
 rate_limit_per_minute = 5
 
-# 외부 연결 최소화: syslog만 사용
+# Minimize external connections: use syslog only
 [alerting.syslog]
 enabled = true
 severity_filter = ["warn", "critical", "emergency"]
 
-# Prometheus endpoint 비활성 (수신 포트 없음)
+# Disable Prometheus endpoint (no listening ports)
 [prometheus]
 enabled = false
 ```

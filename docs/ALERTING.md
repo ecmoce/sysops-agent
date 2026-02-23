@@ -1,6 +1,6 @@
-# 알림 시스템 설계
+# Alert System Design
 
-## 1. 채널 구성
+## 1. Channel Configuration
 
 ### Discord Webhook
 
@@ -8,16 +8,16 @@
 [alerting.discord]
 enabled = true
 webhook_url = "https://discord.com/api/webhooks/ID/TOKEN"
-# 또는 환경 변수 참조
+# or environment variable reference
 # webhook_url = "${DISCORD_WEBHOOK_URL}"
 username = "SysOps Agent"
 severity_filter = ["warn", "critical", "emergency"]
 ```
 
-Discord embed 형식으로 전송합니다:
-- Color: severity별 (green/yellow/red/purple)
+Transmitted in Discord embed format:
+- Color: by severity (green/yellow/red/purple)
 - Title: `[CRITICAL] CPU usage 95.2% on web-01`
-- Fields: 메트릭 값, 임계값, 트렌드 정보
+- Fields: metric value, threshold, trend information
 - Timestamp: ISO 8601
 
 ### Slack Webhook
@@ -30,10 +30,10 @@ channel = "#alerts"
 severity_filter = ["warn", "critical", "emergency"]
 ```
 
-Slack Block Kit 형식:
-- Section block: 알림 내용
-- Context block: 호스트명, 시각
-- Color attachment: severity별 색상
+Slack Block Kit format:
+- Section block: alert content
+- Context block: hostname, timestamp
+- Color attachment: color by severity
 
 ### Telegram Bot
 
@@ -94,22 +94,22 @@ facility = "daemon"
 severity_filter = ["info", "warn", "critical", "emergency"]
 ```
 
-syslog severity 매핑:
+syslog severity mapping:
 - Info → LOG_INFO
 - Warn → LOG_WARNING
 - Critical → LOG_CRIT
 - Emergency → LOG_EMERG
 
-## 2. Alert Template 시스템
+## 2. Alert Template System
 
-각 채널별로 메시지 템플릿을 커스터마이징할 수 있습니다:
+Message templates can be customized for each channel:
 
 ```toml
 [alerting.templates]
-# 기본 템플릿
+# Default template
 default = "[{{severity}}] {{hostname}}: {{message}} ({{metric}}={{value}})"
 
-# 채널별 오버라이드
+# Channel-specific overrides
 discord = """
 **[{{severity}}]** {{hostname}}
 > {{message}}
@@ -118,25 +118,25 @@ discord = """
 """
 ```
 
-### 템플릿 변수
+### Template Variables
 
-| 변수 | 설명 |
-|------|------|
-| `{{hostname}}` | 에이전트 호스트명 |
-| `{{severity}}` | 심각도 레벨 |
-| `{{metric}}` | 메트릭 이름 |
-| `{{value}}` | 현재 값 |
-| `{{threshold}}` | 설정된 임계값 |
-| `{{message}}` | 알림 메시지 |
-| `{{timestamp}}` | ISO 8601 시각 |
-| `{{labels}}` | 메트릭 label들 |
-| `{{trend}}` | 트렌드 정보 (예측 소진 시간 등) |
+| Variable | Description |
+|----------|-------------|
+| `{{hostname}}` | Agent hostname |
+| `{{severity}}` | Severity level |
+| `{{metric}}` | Metric name |
+| `{{value}}` | Current value |
+| `{{threshold}}` | Configured threshold |
+| `{{message}}` | Alert message |
+| `{{timestamp}}` | ISO 8601 timestamp |
+| `{{labels}}` | Metric labels |
+| `{{trend}}` | Trend information (predicted depletion time, etc.) |
 
 ## 3. Rate Limiting & Deduplication
 
 ### Rate Limiting
 
-Token Bucket 알고리즘:
+Token Bucket algorithm:
 
 ```rust
 struct RateLimiter {
@@ -159,14 +159,14 @@ impl RateLimiter {
 }
 ```
 
-기본 설정:
-- 채널당: 분당 10개, 시간당 60개
-- 전체: 시간당 100개
-- Emergency 알림: rate limit 우회 가능
+Default configuration:
+- Per channel: 10 per minute, 60 per hour
+- Global: 100 per hour
+- Emergency alerts: can bypass rate limit
 
 ### Deduplication
 
-동일 알림 재전송 방지:
+Prevent duplicate alert retransmission:
 
 ```rust
 struct DeduplicationEntry {
@@ -176,51 +176,51 @@ struct DeduplicationEntry {
 }
 ```
 
-- 기본 중복 억제 기간: 5분 (Warn), 1분 (Critical), 없음 (Emergency)
-- 억제 기간 후 재발생 시: "지난 N분간 X회 발생" 정보 포함하여 전송
+- Default deduplication period: 5 minutes (Warn), 1 minute (Critical), none (Emergency)
+- On reoccurrence after suppression period: send with "occurred X times in last N minutes" information
 
 ## 4. Escalation Rules
 
-반복 알림에 대한 자동 에스컬레이션:
+Automatic escalation for repeated alerts:
 
 ```toml
 [alerting.escalation]
-# Warn이 N회 연속 발생하면 Critical로 승격
+# Escalate Warn to Critical after N consecutive occurrences
 warn_to_critical_after = 5
-# Critical이 N분간 해소되지 않으면 Emergency
+# Escalate Critical to Emergency after N minutes unresolved
 critical_to_emergency_after_mins = 30
 ```
 
-동작:
-1. `cpu.usage > 80%` → Warn 발생
-2. 5회 연속 (50초간) 지속 → Critical로 에스컬레이션
-3. 30분간 해소되지 않음 → Emergency
+Operation:
+1. `cpu.usage > 80%` → Warn triggered
+2. Persists 5 consecutive times (50 seconds) → Escalate to Critical
+3. Unresolved for 30 minutes → Emergency
 
 ## 5. Alert Grouping
 
-관련 알림을 묶어 한 번에 전송합니다:
+Group related alerts for single transmission:
 
 ```toml
 [alerting.grouping]
 enabled = true
-window_secs = 30  # 30초 내 발생한 알림을 하나로 묶음
+window_secs = 30  # Group alerts occurring within 30 seconds
 ```
 
-예시:
-- 같은 30초 윈도우 내 `disk.usage_percent` warn이 3개 마운트포인트에서 발생
-- → 하나의 알림으로 묶어 전송: "3개 디스크 경고: /(91%), /var(88%), /home(85%)"
+Example:
+- Within same 30-second window, `disk.usage_percent` warnings from 3 mount points
+- → Send as single grouped alert: "3 disk warnings: /(91%), /var(88%), /home(85%)"
 
-그룹핑 키: `(severity, metric_category, timestamp_window)`
+Grouping key: `(severity, metric_category, timestamp_window)`
 
-## 6. Recovery 알림
+## 6. Recovery Alerts
 
-알림 조건이 해소되면 recovery 알림을 전송합니다:
+Send recovery alerts when alert conditions are resolved:
 
 ```toml
 [alerting.recovery]
 enabled = true
-# recovery 알림은 최초 1회만 전송
+# Send recovery alert only once initially
 notify_once = true
 ```
 
-메시지 예시: `[RESOLVED] CPU usage normalized: 45.2% (was: 95.2%)`
+Message example: `[RESOLVED] CPU usage normalized: 45.2% (was: 95.2%)`

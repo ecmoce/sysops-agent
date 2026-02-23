@@ -1,35 +1,35 @@
-# 🏗️ 아키텍처 및 설계 문서
+# 🏗️ Architecture and Design Document
 
-> SysOps Agent의 전체 아키텍처, 모듈 설계, 알고리즘, 보안 모델, 성능 최적화를 다루는 상세 설계 문서
+> Comprehensive design document covering the overall architecture, module design, algorithms, security model, and performance optimization of SysOps Agent
 
 ---
 
-## 목차
+## Table of Contents
 
-1. [시스템 아키텍처 개요](#1-시스템-아키텍처-개요)
-2. [데이터 흐름](#2-데이터-흐름)
-3. [Collector 모듈](#3-collector-모듈)
-4. [멀티소켓 CPU & NUMA](#4-멀티소켓-cpu--numa)
-5. [GPU 모니터링 (NVIDIA)](#5-gpu-모니터링-nvidia)
-6. [시스템 인벤토리](#6-시스템-인벤토리)
-7. [Analyzer 모듈](#7-analyzer-모듈)
-8. [Alerter 모듈](#8-alerter-모듈)
-9. [NATS 텔레메트리](#9-nats-텔레메트리)
+1. [System Architecture Overview](#1-system-architecture-overview)
+2. [Data Flow](#2-data-flow)
+3. [Collector Module](#3-collector-module)
+4. [Multi-socket CPU & NUMA](#4-multi-socket-cpu--numa)
+5. [GPU Monitoring (NVIDIA)](#5-gpu-monitoring-nvidia)
+6. [System Inventory](#6-system-inventory)
+7. [Analyzer Module](#7-analyzer-module)
+8. [Alerter Module](#8-alerter-module)
+9. [NATS Telemetry](#9-nats-telemetry)
 10. [Storage](#10-storage)
 11. [Log Analyzer](#11-log-analyzer)
 12. [Security Model](#12-security-model)
 13. [Platform Abstraction](#13-platform-abstraction)
 14. [Performance Budget](#14-performance-budget)
-15. [에러 처리 및 복원력](#15-에러-처리-및-복원력)
-16. [확장 포인트](#16-확장-포인트)
+15. [Error Handling and Resilience](#15-error-handling-and-resilience)
+16. [Extension Points](#16-extension-points)
 
 ---
 
-## 1. 시스템 아키텍처 개요
+## 1. System Architecture Overview
 
-SysOps Agent는 **Collector → Storage → Analyzer → Alerter** 4단계 파이프라인으로 구성됩니다. 각 단계는 독립적인 모듈로 분리되어 있으며, tokio 비동기 채널(mpsc)을 통해 데이터를 전달합니다.
+SysOps Agent consists of a 4-stage pipeline: **Collector → Storage → Analyzer → Alerter**. Each stage is separated into independent modules and data is passed through tokio asynchronous channels (mpsc).
 
-### 1.1 컴포넌트 다이어그램
+### 1.1 Component Diagram
 
 ```mermaid
 graph TB
@@ -107,7 +107,7 @@ graph TB
     AG --> AD & AS & AT & AE & AW & AY
 ```
 
-### 1.2 프로세스 구조
+### 1.2 Process Structure
 
 ```
 ┌─────────────────────────────── Main Process ───────────────────────────────┐
@@ -151,7 +151,7 @@ graph TB
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.3 배포 토폴로지
+### 1.3 Deployment Topology
 
 ```
 ┌──── Data Center / Cloud ────────────────────────────────────────┐
@@ -188,9 +188,9 @@ graph TB
 
 ---
 
-## 2. 데이터 흐름
+## 2. Data Flow
 
-### 2.1 메트릭 파이프라인
+### 2.1 Metric Pipeline
 
 ```
  ┌───────────────┐     10s/30s/60s      ┌─────────────────┐
@@ -198,1611 +198,2845 @@ graph TB
  │  (kernel VFS) │                       │  {              │
  └───────────────┘                       │    timestamp,   │
                                          │    metric_id,   │
-                                         │    value: f64,  │
-                                         │    labels[]     │
+                                         │    value,       │
+                                         │    labels       │
                                          │  }              │
-                                         └────────┬────────┘
-                                                  │
-                                    mpsc (bounded, 10,000)
-                                                  │
-                                                  ▼
-                                         ┌────────────────┐
-                                         │  Ring Buffer   │───persist──▶ SQLite?
-                                         │  (per-metric)  │  (1min avg downsample)
-                                         └────────┬───────┘
-                                                  │
-                                            query (pull)
-                                                  │
-                                    ┌─────────────┼─────────────┐
-                                    ▼             ▼             ▼
-                              ┌──────────┐ ┌──────────┐ ┌──────────┐
-                              │Threshold │ │ Z-Score  │ │  Trend   │
-                              │  Check   │ │ Detect   │ │ Analyze  │
-                              └────┬─────┘ └────┬─────┘ └────┬─────┘
-                                   │            │            │
-                                   └────────────┼────────────┘
-                                                │
-                                    mpsc (bounded, 1,000)
-                                                │
-                                                ▼
-                                       ┌────────────────┐
-                                       │ Alert Manager  │
-                                       │ (dedup, rate   │
-                                       │  limit, route) │
-                                       └────────┬───────┘
-                                                │
-                              ┌────────┬────────┼────────┬────────┐
-                              ▼        ▼        ▼        ▼        ▼
-                          Discord   Slack   Telegram   Email   Webhook
+                                         └─────────┬───────┘
+                                                   │
+                                     mpsc::channel (10K buffer)
+                                                   │
+                                                   ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │                 Storage + Analysis Loop                     │
+ │                                                             │
+ │  1. Store to RingBuffer ──── per-metric circular buffer    │
+ │                         └─── optional SQLite persistence   │
+ │                                                             │
+ │  2. Run Analysis ────────── query recent data window       │
+ │     • Threshold check       • Z-Score anomaly              │
+ │     • EMA tracker          • Trend prediction              │
+ │     • Leak detection       • Pattern matching              │
+ │                                                             │
+ │  3. Emit Alert (if any) ─── Alert { severity, message }    │
+ └─────────────────────────┬───────────────────────────────────┘
+                           │
+                 mpsc::channel (1K buffer)
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │                    Alert Manager                            │
+ │                                                             │
+ │  1. Deduplication ──── same alert in N seconds → suppress  │
+ │  2. Severity Routing ─ INFO/WARN/CRIT/EMERG classification │
+ │  3. Rate Limiting ──── token bucket per channel            │
+ │  4. Grouping ────────── related alerts in time window      │
+ │                                                             │
+ │  5. Dispatch to channels:                                   │
+ │     Discord Webhook, Slack, Telegram Bot, Email, Syslog    │
+ └─────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 MetricSample 구조
-
-```rust
-pub struct MetricSample {
-    pub timestamp: u64,                      // Unix epoch (seconds)
-    pub metric: MetricId,                    // Enum: CpuUsage, MemoryUsed, ...
-    pub value: f64,                          // 측정 값
-    pub labels: SmallVec<[Label; 4]>,        // 스택 할당 (4개 이하)
-}
-
-pub struct Label {
-    pub key: &'static str,                   // "device", "mountpoint", "pid"
-    pub value: CompactString,                // 힙 할당 최소화
-}
-
-// 크기: ~64 bytes per sample
-// 24h × 10s interval = 8,640 samples/metric
-// 30 metrics × 8,640 × 64 bytes ≈ 16 MB (worst case)
-```
-
-### 2.3 Backpressure 처리
+### 2.2 Log Analysis Pipeline
 
 ```
-Collector ──▶ [mpsc channel, cap=10,000] ──▶ Storage
-
-  채널 full 시:
-  ├─ try_send() 실패 → oldest sample drop
-  ├─ drop counter 증가 (메트릭으로 노출)
-  └─ 로그 경고: "Dropped N samples due to backpressure"
-
-  원인: Analyzer가 느리거나 I/O 지연
-  대응: Storage가 catch up 할 때까지 collector는 계속 수집
+ ┌─────────────────┐
+ │ dmesg           │
+ │ /var/log/syslog │ ═════read (tail-f)═════▶ ┌─────────────────┐
+ │ journalctl -f   │                          │   LogEvent      │
+ └─────────────────┘                          │   {             │
+                                              │     timestamp,  │
+                                              │     source,     │
+                                              │     line        │
+                                              │   }             │
+                                              └─────────┬───────┘
+                                                        │
+                                              Pattern matching
+                                                        │
+                                                        ▼
+                                              ┌─────────────────┐
+                                              │ Alert (if match)│
+                                              │ {               │
+                                              │   severity: determined by pattern │
+                                              │   message: extracted info         │
+                                              │   source: log_analyzer            │
+                                              │ }               │
+                                              └─────────────────┘
 ```
 
 ---
 
-## 3. Collector 모듈
+## 3. Collector Module
 
-### 3.1 수집 원리
+### 3.1 Architecture
 
-모든 메트릭은 `/proc` 및 `/sys` 파일시스템에서 직접 파싱합니다. 외부 바이너리 호출이나 라이브러리 의존 없이, 커널이 제공하는 가상 파일시스템을 직접 읽습니다.
-
-### 3.2 수집 소스 매핑
-
-```
-┌──────────────┬──────────────────────────────┬────────┬───────────────┐
-│ 카테고리     │ 소스 파일                     │ 주기   │ 파싱 방식     │
-├──────────────┼──────────────────────────────┼────────┼───────────────┤
-│ CPU          │ /proc/stat                   │ 10초   │ delta counter │
-│ Memory       │ /proc/meminfo                │ 10초   │ gauge 직접    │
-│ Disk I/O     │ /proc/diskstats              │ 10초   │ delta counter │
-│ Disk Usage   │ /proc/mounts + statvfs()     │ 60초   │ gauge 직접    │
-│ Network      │ /proc/net/dev                │ 10초   │ delta counter │
-│ Process      │ /proc/[pid]/stat, status     │ 30초   │ gauge 직접    │
-│ File Desc.   │ /proc/sys/fs/file-nr         │ 30초   │ gauge 직접    │
-│              │ /proc/[pid]/fd/              │        │ readdir count │
-│ Load Average │ /proc/loadavg                │ 10초   │ gauge 직접    │
-│ Uptime       │ /proc/uptime                 │ 60초   │ gauge 직접    │
-└──────────────┴──────────────────────────────┴────────┴───────────────┘
-```
-
-### 3.3 파싱 전략: Zero-copy
-
-파일 내용을 스택 버퍼(4KB)에 읽고, `&str` 슬라이싱으로 파싱합니다. 힙 할당을 최소화합니다.
-
-```rust
-// /proc/stat 파싱 예시
-fn parse_cpu_stat(buf: &[u8]) -> Result<CpuStats> {
-    let s = std::str::from_utf8(buf)?;
-    for line in s.lines() {
-        if line.starts_with("cpu ") {
-            let mut fields = line.split_whitespace().skip(1);
-            let user = fields.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-            let nice = fields.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-            // ... idle, iowait, irq, softirq, steal
-        }
-    }
-}
-```
-
-**Delta 계산**: CPU, 디스크 I/O, 네트워크 등 카운터 메트릭은 이전 값과의 차이를 계산하여 rate로 변환합니다.
-
-```
-          t1                 t2
-cpu_user: 150000    →    150500
-                    Δ = 500 ticks
-                    elapsed = 10s
-                    rate = 500 / (total_Δ) = 5.0%
-```
-
-### 3.4 Collector Trait
+Each collector runs as an independent tokio task and publishes MetricSample to a shared channel:
 
 ```rust
 #[async_trait]
 pub trait Collector: Send + Sync {
-    /// Collector의 고유 이름
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
+    async fn collect(&mut self) -> Result<Vec<MetricSample>, CollectorError>;
+}
 
-    /// 메트릭 수집 수행
-    async fn collect(&mut self) -> Result<Vec<MetricSample>>;
+pub struct MetricSample {
+    pub timestamp: SystemTime,
+    pub metric_id: MetricId,
+    pub value: f64,
+    pub labels: HashMap<String, String>,
+}
 
-    /// 수집 주기 (초)
-    fn interval_secs(&self) -> u64;
+// Main collector loop
+async fn collector_loop<C: Collector>(
+    mut collector: C,
+    tx: mpsc::Sender<MetricSample>,
+    interval: Duration,
+    mut shutdown: broadcast::Receiver<()>
+) -> Result<(), CollectorError> {
+    let mut ticker = interval(interval);
+    loop {
+        select! {
+            _ = ticker.tick() => {
+                match collector.collect().await {
+                    Ok(samples) => {
+                        for sample in samples {
+                            tx.send(sample).await?;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Collector {} failed: {}", collector.name(), e);
+                        // Continue running, don't crash on single collector failure
+                    }
+                }
+            }
+            _ = shutdown.recv() => {
+                info!("Collector {} shutting down", collector.name());
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 ```
 
-### 3.5 CPU Collector 상세
+### 3.2 Error Handling Strategy
 
-```
-/proc/stat 파싱:
-
-  cpu  150000 1000 50000 800000 5000 2000 1000 500 0 0
-  │     │      │     │      │     │     │     │    │
-  │     user  nice  system idle  iowait irq  softirq steal
-  │
-  cpu0 75000 500 25000 400000 ...  (per-core)
-
-  출력 메트릭:
-  ├── cpu_usage_percent      (전체 CPU 사용률)
-  ├── cpu_user_percent       (user 모드)
-  ├── cpu_system_percent     (kernel 모드)
-  ├── cpu_iowait_percent     (I/O 대기)
-  ├── cpu_steal_percent      (VM steal, 클라우드 환경 중요)
-  ├── cpu_core_usage_percent (코어별, labels: {core: "0"})
-  └── load_avg_1m/5m/15m     (/proc/loadavg)
-```
-
----
-
-## 4. 멀티소켓 CPU & NUMA
-
-### 4.1 멀티소켓 CPU 토폴로지
-
-엔터프라이즈 서버는 2~8소켓 구성이 일반적입니다. SysOps Agent는 소켓/코어/스레드 계층을 인식하여 소켓별 독립 모니터링을 지원합니다.
-
-```
-┌─────────────────────── 2-Socket Server ───────────────────────┐
-│                                                                │
-│  ┌─── Socket 0 (NUMA Node 0) ───┐  ┌─── Socket 1 (NUMA Node 1) ───┐
-│  │                               │  │                               │
-│  │  Core 0  [T0, T1]            │  │  Core 28 [T56, T57]           │
-│  │  Core 1  [T2, T3]            │  │  Core 29 [T58, T59]           │
-│  │  ...                         │  │  ...                          │
-│  │  Core 27 [T54, T55]          │  │  Core 55 [T110, T111]         │
-│  │                               │  │                               │
-│  │  L3 Cache: 42MB              │  │  L3 Cache: 42MB               │
-│  │  Local Memory: 256GB         │  │  Local Memory: 256GB          │
-│  └───────────────────────────────┘  └───────────────────────────────┘
-│                                                                │
-│  Interconnect: UPI / QPI (cross-socket memory access penalty)  │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### 4.2 데이터 소스
-
-```
-┌────────────────────────────────┬──────────────────────────────────┐
-│ 정보                           │ 소스                             │
-├────────────────────────────────┼──────────────────────────────────┤
-│ Socket count                   │ /sys/devices/system/cpu/         │
-│                                │   cpu*/topology/physical_package_id│
-│ Core-to-socket mapping         │ /sys/devices/system/cpu/         │
-│                                │   cpu*/topology/core_id          │
-│ NUMA node count                │ /sys/devices/system/node/        │
-│ CPU-to-NUMA mapping            │ /sys/devices/system/node/        │
-│                                │   node*/cpulist                  │
-│ Per-NUMA memory                │ /sys/devices/system/node/        │
-│                                │   node*/meminfo                  │
-│ Per-CPU usage                  │ /proc/stat (cpu0, cpu1, ...)     │
-│ ECC errors (EDAC)              │ /sys/devices/system/edac/mc*/    │
-│                                │   csrow*/ce_count, ue_count      │
-│ CPU frequency                  │ /sys/devices/system/cpu/         │
-│                                │   cpu*/cpufreq/scaling_cur_freq  │
-│ CPU temperature                │ /sys/class/hwmon/hwmon*/temp*    │
-└────────────────────────────────┴──────────────────────────────────┘
-```
-
-### 4.3 소켓별 CPU 사용률 계산
+**Principle**: Individual collector failures should not crash the entire agent.
 
 ```rust
-// /proc/stat에서 cpu0, cpu1, ... 별로 파싱
-// topology/physical_package_id로 그룹핑
-
-struct SocketStats {
-    socket_id: u32,
-    core_ids: Vec<u32>,
-    thread_ids: Vec<u32>,            // logical CPU ids
-    usage_percent: f64,               // 소켓 내 모든 코어 평균
-    max_core_usage: f64,              // 가장 높은 코어
-    frequency_mhz: f64,              // 평균 주파수
-    temperature_celsius: Option<f64>, // hwmon
+pub enum CollectorError {
+    IoError(std::io::Error),
+    ParseError(String),
+    UnsupportedPlatform,
+    PermissionDenied,
 }
 
-// 출력 메트릭:
-// cpu_socket_usage_percent     {socket: "0"}   → 45.2%
-// cpu_socket_usage_percent     {socket: "1"}   → 12.3%
-// cpu_socket_max_core_percent  {socket: "0"}   → 98.1%  (핫스팟 감지)
-```
-
-### 4.4 NUMA 메모리 모니터링
-
-```
-/sys/devices/system/node/node0/meminfo:
-  Node 0 MemTotal:       262144000 kB
-  Node 0 MemFree:         65536000 kB
-  Node 0 MemUsed:        196608000 kB
-
-→ 메트릭:
-  memory_numa_used_percent    {node: "0"}   → 75.0%
-  memory_numa_used_percent    {node: "1"}   → 32.1%
-  memory_numa_free_mb         {node: "0"}   → 64000
-  memory_numa_free_mb         {node: "1"}   → 178000
-
-⚠️ NUMA imbalance 감지:
-  if max(node_usage) - min(node_usage) > 40% → Alert(Warn)
-  "NUMA memory imbalance: node0=75%, node1=32%"
-```
-
-### 4.5 ECC Memory 에러 모니터링
-
-```
-/sys/devices/system/edac/mc0/csrow0/ce_count  → correctable errors
-/sys/devices/system/edac/mc0/csrow0/ue_count  → uncorrectable errors
-
-→ 메트릭:
-  ecc_correctable_errors      {mc: "0", csrow: "0"}  → gauge
-  ecc_uncorrectable_errors    {mc: "0", csrow: "0"}  → gauge
-
-규칙:
-  ce_count 증가 → Warn  (DIMM 열화 징후)
-  ue_count > 0  → Critical (데이터 손상 위험, DIMM 교체 필요)
+impl Collector for CpuCollector {
+    async fn collect(&mut self) -> Result<Vec<MetricSample>, CollectorError> {
+        let content = match fs::read_to_string("/proc/stat").await {
+            Ok(content) => content,
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                return Err(CollectorError::PermissionDenied);
+            }
+            Err(e) => {
+                // Temporary I/O error - continue with empty result
+                warn!("Failed to read /proc/stat: {}", e);
+                return Ok(vec![]);  // Empty result, don't propagate error
+            }
+        };
+        
+        // Parse and return metrics...
+        self.parse_proc_stat(&content)
+    }
+}
 ```
 
 ---
 
-## 5. GPU 모니터링 (NVIDIA)
+## 4. Multi-socket CPU & NUMA
 
-### 5.1 개요
+### 4.1 CPU Topology Discovery
 
-`gpu` feature flag로 활성화. NVIDIA Management Library (NVML)를 통해 GPU 메트릭을 직접 수집합니다. `nvidia-smi` CLI 호출 없이 C 바인딩으로 접근하여 오버헤드를 최소화합니다.
-
-```
-┌────────── GPU Collector ──────────┐
-│                                    │
-│  ┌──────────────────────────────┐ │
-│  │ nvml-wrapper (Rust crate)    │ │
-│  │                              │ │
-│  │  nvmlInit()                  │ │
-│  │  nvmlDeviceGetCount()        │ │
-│  │  nvmlDeviceGetHandleByIndex()│ │
-│  │  nvmlDeviceGetUtilizationRates()│
-│  │  nvmlDeviceGetMemoryInfo()   │ │
-│  │  nvmlDeviceGetTemperature()  │ │
-│  │  nvmlDeviceGetPowerUsage()   │ │
-│  │  nvmlDeviceGetEccMode()      │ │
-│  │  ...                         │ │
-│  └──────────┬───────────────────┘ │
-│             │                      │
-│             ▼ libnvidia-ml.so      │
-│        (NVIDIA driver 포함)        │
-└────────────────────────────────────┘
-```
-
-### 5.2 수집 메트릭
-
-```
-┌──────────────────────────────┬─────────────────────────┬─────────┐
-│ 메트릭                       │ NVML API                │ 주기    │
-├──────────────────────────────┼─────────────────────────┼─────────┤
-│ GPU Utilization %            │ GetUtilizationRates     │ 10초    │
-│ GPU Memory Used/Total        │ GetMemoryInfo           │ 10초    │
-│ GPU Temperature (°C)         │ GetTemperature          │ 10초    │
-│ GPU Power Usage (W)          │ GetPowerUsage           │ 10초    │
-│ GPU Clock (MHz)              │ GetClockInfo            │ 10초    │
-│ GPU Fan Speed %              │ GetFanSpeed             │ 30초    │
-│ ECC Errors (SBE/DBE)         │ GetTotalEccErrors       │ 60초    │
-│ PCIe Throughput (rx/tx)      │ GetPcieThroughput       │ 10초    │
-│ Encoder/Decoder Utilization  │ GetEncoderUtilization   │ 30초    │
-│ Per-Process GPU Memory       │ GetComputeRunningProcesses│ 30초  │
-│ Throttle Reasons             │ GetCurrentClocksThrottleReasons│10초│
-│ NVLink Throughput            │ GetNvLinkUtilization    │ 30초    │
-│ Retired Pages (pending/blacklisted)│ GetRetiredPages   │ 300초   │
-└──────────────────────────────┴─────────────────────────┴─────────┘
-
-Labels: {gpu: "0", model: "A100-SXM4-80GB", uuid: "GPU-xxxx"}
-```
-
-### 5.3 GPU 이상 탐지
-
-```
-┌─────────────────────────┬────────────┬────────────────────────────┐
-│ 조건                    │ Severity   │ 의미                       │
-├─────────────────────────┼────────────┼────────────────────────────┤
-│ temperature > 85°C      │ 🟡 Warn    │ Thermal throttling 임박    │
-│ temperature > 95°C      │ 🔴 Critical│ 과열, 성능 저하 발생       │
-│ memory_used > 90%       │ 🟡 Warn    │ OOM 위험                   │
-│ memory_used > 98%       │ 🔴 Critical│ GPU OOM 임박               │
-│ ecc_dbe > 0             │ 🔴 Critical│ 복구 불가 메모리 에러      │
-│ ecc_sbe 급증            │ 🟡 Warn    │ GPU 메모리 열화            │
-│ retired_pages > threshold│ 🔴 Critical│ GPU 교체 필요             │
-│ Xid error in dmesg      │ 🔴 Critical│ GPU 장애                   │
-│ throttle: thermal       │ 🟡 Warn    │ 열 제한 중                 │
-│ throttle: power         │ 🟡 Warn    │ 전력 제한 중               │
-│ GPU fallen off bus      │ ⚫ Emergency│ GPU 하드웨어 장애          │
-└─────────────────────────┴────────────┴────────────────────────────┘
-```
-
-### 5.4 멀티 GPU 토폴로지
-
-```
-  ┌───── GPU Server (DGX-like) ─────────────────────┐
-  │                                                   │
-  │  CPU Socket 0              CPU Socket 1           │
-  │  ┌─────────┐               ┌─────────┐           │
-  │  │ NUMA 0  │               │ NUMA 1  │           │
-  │  └────┬────┘               └────┬────┘           │
-  │       │ PCIe                    │ PCIe            │
-  │  ┌────┴────┐ ┌────────┐  ┌────┴────┐ ┌────────┐│
-  │  │ GPU 0   │─│ GPU 1  │  │ GPU 2   │─│ GPU 3  ││
-  │  │ A100    │ │ A100   │  │ A100    │ │ A100   ││
-  │  └────┬────┘ └───┬────┘  └────┬────┘ └───┬────┘│
-  │       │ NVLink    │            │ NVLink    │     │
-  │       └───────────┘            └───────────┘     │
-  │                                                   │
-  │  GPU-CPU Affinity:                                │
-  │  GPU 0,1 → NUMA 0 (Socket 0)                     │
-  │  GPU 2,3 → NUMA 1 (Socket 1)                     │
-  └───────────────────────────────────────────────────┘
-
-  → 메트릭에 {gpu: "0", numa_node: "0", pcie_bus: "0000:3b:00.0"} label 포함
-```
-
-### 5.5 Graceful Degradation
-
-GPU feature가 활성화되었으나 NVIDIA 드라이버가 없는 서버에서는:
-
-```
-1. nvmlInit() 실패 → 경고 로그 1회 출력
-2. GPU Collector 비활성화
-3. 나머지 Collector (CPU, Memory 등) 정상 동작
-4. 주기적으로 드라이버 감지 재시도 (선택적)
-```
-
----
-
-## 6. 시스템 인벤토리
-
-### 6.1 개요
-
-에이전트 시작 시 및 주기적(기본 5분)으로 서버의 하드웨어/소프트웨어 스펙을 수집합니다. 이 정보는 NATS를 통해 중앙 CMDB/인벤토리 시스템에 전송되며, 자산 관리, 용량 계획, 취약점 관리에 활용됩니다.
-
-### 6.2 수집 아키텍처
-
-```
- ┌─────────────────── Inventory Collector ───────────────────┐
- │                                                            │
- │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
- │  │ OS Info      │  │ CPU Info     │  │ Memory Info  │    │
- │  │              │  │              │  │              │    │
- │  │ /etc/os-     │  │ /proc/cpuinfo│  │ /proc/meminfo│    │
- │  │ release      │  │ lscpu        │  │ dmidecode    │    │
- │  │ uname -r     │  │ /sys/devices/│  │ /sys/devices/│    │
- │  │              │  │ system/cpu/  │  │ system/edac/ │    │
- │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
- │         │                 │                  │             │
- │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
- │  │ GPU Info     │  │ Disk Info    │  │ Network Info │    │
- │  │              │  │              │  │              │    │
- │  │ NVML API     │  │ /sys/block/  │  │ /sys/class/  │    │
- │  │ nvidia-smi   │  │ smartctl     │  │ net/         │    │
- │  │              │  │ lsblk        │  │ ethtool      │    │
- │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
- │         │                 │                  │             │
- │  ┌──────────────┐                                         │
- │  │ BIOS/Board   │                                         │
- │  │              │                                         │
- │  │ /sys/devices/│                                         │
- │  │ virtual/dmi/ │                                         │
- │  │ dmidecode    │                                         │
- │  └──────┬───────┘                                         │
- │         │                                                  │
- └─────────┼──────────────────────────────────────────────────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ SystemInfo    │──── JSON serialize ──── NATS publish
-   │ (struct)      │                         sysops.{hostname}.inventory
-   └───────────────┘
-```
-
-### 6.3 SystemInfo 구조체
+Modern servers often have multiple CPU sockets with NUMA architecture. We need accurate per-socket metrics:
 
 ```rust
-#[derive(Serialize)]
-pub struct SystemInfo {
+pub struct CpuTopology {
+    pub total_cores: u32,
+    pub sockets: Vec<CpuSocket>,
+    pub numa_nodes: Vec<NumaNode>,
+}
+
+pub struct CpuSocket {
+    pub socket_id: u32,
+    pub physical_cores: Vec<u32>,  // Core IDs in this socket
+    pub logical_cores: Vec<u32>,   // Hyperthread IDs
+}
+
+pub struct NumaNode {
+    pub node_id: u32,
+    pub cpu_list: Vec<u32>,        // CPUs in this NUMA node
+    pub memory_size_kb: u64,       // Memory local to this node
+}
+
+impl CpuTopology {
+    pub fn discover() -> Result<Self, TopologyError> {
+        // Read /sys/devices/system/cpu/cpu*/topology/*
+        // Read /sys/devices/system/node/node*/cpulist
+        // Read /sys/devices/system/node/node*/meminfo
+        
+        let mut sockets = HashMap::new();
+        let mut numa_nodes = HashMap::new();
+        
+        for cpu_dir in glob("/sys/devices/system/cpu/cpu[0-9]*")? {
+            let cpu_id = parse_cpu_id(&cpu_dir)?;
+            
+            // Read socket ID
+            let physical_id = read_topology_file(&cpu_dir, "physical_package_id")?;
+            sockets.entry(physical_id)
+                .or_insert_with(Vec::new)
+                .push(cpu_id);
+                
+            // Read NUMA node
+            if let Ok(node_id) = read_topology_file(&cpu_dir, "node_id") {
+                numa_nodes.entry(node_id)
+                    .or_insert_with(Vec::new)
+                    .push(cpu_id);
+            }
+        }
+        
+        // Build final topology structure...
+        Ok(CpuTopology { /* ... */ })
+    }
+}
+```
+
+### 4.2 Per-Socket Metrics
+
+Collect CPU usage per socket to detect imbalanced workloads:
+
+```rust
+impl CpuCollector {
+    async fn collect_per_socket(&mut self) -> Result<Vec<MetricSample>, CollectorError> {
+        let stat_content = fs::read_to_string("/proc/stat").await?;
+        let mut samples = Vec::new();
+        
+        for socket in &self.topology.sockets {
+            let mut total_user = 0u64;
+            let mut total_system = 0u64;
+            let mut total_idle = 0u64;
+            let mut total_iowait = 0u64;
+            
+            // Aggregate stats for all cores in this socket
+            for &core_id in &socket.logical_cores {
+                if let Some(cpu_line) = find_cpu_line(&stat_content, core_id) {
+                    let stats = parse_cpu_line(cpu_line)?;
+                    total_user += stats.user;
+                    total_system += stats.system;
+                    total_idle += stats.idle;
+                    total_iowait += stats.iowait;
+                }
+            }
+            
+            // Calculate socket-level usage percentage
+            let total = total_user + total_system + total_idle + total_iowait;
+            if total > 0 {
+                let usage_pct = 100.0 * (total_user + total_system) as f64 / total as f64;
+                
+                samples.push(MetricSample {
+                    timestamp: SystemTime::now(),
+                    metric_id: MetricId::new("cpu.socket_usage_percent"),
+                    value: usage_pct,
+                    labels: hashmap! {
+                        "socket".to_string() => socket.socket_id.to_string(),
+                    },
+                });
+            }
+        }
+        
+        Ok(samples)
+    }
+}
+```
+
+---
+
+## 5. GPU Monitoring (NVIDIA)
+
+### 5.1 NVML Integration
+
+GPU monitoring requires NVIDIA driver and NVML library. We use runtime dynamic loading to support non-GPU systems:
+
+```rust
+#[cfg(feature = "gpu")]
+pub struct NvmlCollector {
+    nvml: Option<nvml_wrapper::Nvml>,
+    devices: Vec<nvml_wrapper::Device>,
+}
+
+#[cfg(feature = "gpu")]
+impl NvmlCollector {
+    pub fn new() -> Result<Self, NvmlError> {
+        // Try to initialize NVML
+        let nvml = match nvml_wrapper::Nvml::init() {
+            Ok(nvml) => Some(nvml),
+            Err(nvml_wrapper::error::NvmlError::LibloadingError(_)) => {
+                warn!("NVML library not found, GPU monitoring disabled");
+                return Ok(NvmlCollector { nvml: None, devices: vec![] });
+            }
+            Err(e) => return Err(e.into()),
+        };
+        
+        let devices = if let Some(ref nvml) = nvml {
+            (0..nvml.device_count()?)
+                .map(|i| nvml.device_by_index(i))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![]
+        };
+        
+        Ok(NvmlCollector { nvml, devices })
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl Collector for NvmlCollector {
+    fn name(&self) -> &'static str { "gpu" }
+    
+    async fn collect(&mut self) -> Result<Vec<MetricSample>, CollectorError> {
+        let Some(ref nvml) = self.nvml else {
+            return Ok(vec![]); // No NVML, return empty
+        };
+        
+        let mut samples = Vec::new();
+        let timestamp = SystemTime::now();
+        
+        for (gpu_id, device) in self.devices.iter().enumerate() {
+            // GPU utilization
+            if let Ok(utilization) = device.utilization_rates() {
+                samples.push(MetricSample {
+                    timestamp,
+                    metric_id: MetricId::new("gpu.utilization_percent"),
+                    value: utilization.gpu as f64,
+                    labels: gpu_labels(gpu_id, device),
+                });
+            }
+            
+            // GPU memory
+            if let Ok(memory_info) = device.memory_info() {
+                let used_pct = 100.0 * memory_info.used as f64 / memory_info.total as f64;
+                samples.push(MetricSample {
+                    timestamp,
+                    metric_id: MetricId::new("gpu.memory_usage_percent"),
+                    value: used_pct,
+                    labels: gpu_labels(gpu_id, device),
+                });
+                
+                samples.push(MetricSample {
+                    timestamp,
+                    metric_id: MetricId::new("gpu.memory_used_bytes"),
+                    value: memory_info.used as f64,
+                    labels: gpu_labels(gpu_id, device),
+                });
+            }
+            
+            // GPU temperature
+            if let Ok(temp) = device.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu) {
+                samples.push(MetricSample {
+                    timestamp,
+                    metric_id: MetricId::new("gpu.temperature_celsius"),
+                    value: temp as f64,
+                    labels: gpu_labels(gpu_id, device),
+                });
+            }
+            
+            // GPU power consumption
+            if let Ok(power) = device.power_usage() {
+                samples.push(MetricSample {
+                    timestamp,
+                    metric_id: MetricId::new("gpu.power_watts"),
+                    value: power as f64 / 1000.0,  // mW -> W
+                    labels: gpu_labels(gpu_id, device),
+                });
+            }
+            
+            // ECC errors
+            if let Ok(ecc_errors) = device.total_ecc_errors(
+                nvml_wrapper::enum_wrappers::device::MemoryErrorType::Corrected,
+                nvml_wrapper::enum_wrappers::device::EccCounterType::Aggregate
+            ) {
+                samples.push(MetricSample {
+                    timestamp,
+                    metric_id: MetricId::new("gpu.ecc_errors_corrected_total"),
+                    value: ecc_errors as f64,
+                    labels: gpu_labels(gpu_id, device),
+                });
+            }
+        }
+        
+        Ok(samples)
+    }
+}
+
+fn gpu_labels(gpu_id: usize, device: &nvml_wrapper::Device) -> HashMap<String, String> {
+    let mut labels = HashMap::new();
+    labels.insert("gpu_id".to_string(), gpu_id.to_string());
+    
+    if let Ok(name) = device.name() {
+        labels.insert("gpu_model".to_string(), name);
+    }
+    
+    labels
+}
+```
+
+### 5.2 GPU Process Monitoring
+
+Track which processes are using GPU resources:
+
+```rust
+impl NvmlCollector {
+    async fn collect_processes(&mut self) -> Result<Vec<MetricSample>, CollectorError> {
+        let Some(ref nvml) = self.nvml else { return Ok(vec![]); };
+        let mut samples = Vec::new();
+        let timestamp = SystemTime::now();
+        
+        for (gpu_id, device) in self.devices.iter().enumerate() {
+            if let Ok(processes) = device.running_compute_processes() {
+                for process in processes {
+                    // Get process name from /proc/[pid]/comm
+                    let process_name = read_process_name(process.pid)
+                        .unwrap_or_else(|_| format!("pid_{}", process.pid));
+                    
+                    samples.push(MetricSample {
+                        timestamp,
+                        metric_id: MetricId::new("gpu.process_memory_bytes"),
+                        value: process.used_gpu_memory as f64,
+                        labels: hashmap! {
+                            "gpu_id".to_string() => gpu_id.to_string(),
+                            "pid".to_string() => process.pid.to_string(),
+                            "process_name".to_string() => process_name,
+                        },
+                    });
+                }
+            }
+        }
+        
+        Ok(samples)
+    }
+}
+```
+
+---
+
+## 6. System Inventory
+
+### 6.1 Hardware Discovery
+
+Collect comprehensive system inventory at startup and periodically:
+
+```rust
+pub struct InventoryCollector {
+    last_collection: Option<SystemTime>,
+    collection_interval: Duration,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SystemInventory {
     pub hostname: String,
-    pub collected_at: DateTime<Utc>,
-    pub agent_version: String,
+    pub collected_at: SystemTime,
     pub os: OsInfo,
     pub cpu: CpuInfo,
-    pub numa: Option<NumaInfo>,
     pub memory: MemoryInfo,
-    pub gpu: Vec<GpuInfo>,              // feature "gpu"
     pub disks: Vec<DiskInfo>,
     pub network: Vec<NetworkInfo>,
-    pub bios: Option<BiosInfo>,
+    pub gpu: Option<Vec<GpuInfo>>,
+    pub chassis: Option<ChassisInfo>,
 }
 
-#[derive(Serialize)]
-pub struct OsInfo {
-    pub distro: String,                  // "Ubuntu", "Rocky Linux"
-    pub version: String,                 // "22.04.4 LTS"
-    pub kernel: String,                  // "5.15.0-91-generic"
-    pub arch: String,                    // "x86_64"
-    pub hostname: String,
-    pub boot_time: DateTime<Utc>,
-    pub uptime_secs: u64,
-}
-
-#[derive(Serialize)]
-pub struct CpuInfo {
-    pub model: String,                   // "Intel Xeon Gold 6348 @ 2.60GHz"
-    pub vendor: String,                  // "GenuineIntel", "AuthenticAMD"
-    pub family: u32,
-    pub model_id: u32,
-    pub stepping: u32,
-    pub microcode: String,
-    pub sockets: u32,
-    pub cores_per_socket: u32,
-    pub threads_per_core: u32,
-    pub total_threads: u32,
-    pub base_mhz: f64,
-    pub max_mhz: Option<f64>,
-    pub cache_l1d_kb: u32,
-    pub cache_l1i_kb: u32,
-    pub cache_l2_kb: u32,
-    pub cache_l3_kb: u32,
-    pub flags: Vec<String>,             // ["avx512f", "avx512bw", ...]
-}
-
-#[derive(Serialize)]
-pub struct MemoryInfo {
-    pub total_mb: u64,
-    pub dimm_count: Option<u32>,         // dmidecode 필요
-    pub dimms: Option<Vec<DimmInfo>>,
-    pub ecc_supported: bool,
-}
-
-#[derive(Serialize)]
-pub struct DimmInfo {
-    pub slot: String,                    // "DIMM_A1"
-    pub size_mb: u64,                    // 32768
-    pub type_: String,                   // "DDR4", "DDR5"
-    pub speed_mhz: u32,                 // 3200
-    pub manufacturer: String,            // "Samsung"
-    pub part_number: String,
-    pub serial: String,
-    pub ecc: bool,
-}
-
-#[derive(Serialize)]
-pub struct GpuInfo {
-    pub index: u32,
-    pub model: String,                   // "NVIDIA A100-SXM4-80GB"
-    pub uuid: String,
-    pub vram_mb: u64,
-    pub driver_version: String,
-    pub cuda_version: String,
-    pub pcie_gen: u32,
-    pub pcie_width: u32,
-    pub power_limit_watts: f64,
-    pub ecc_enabled: bool,
-    pub numa_node: Option<u32>,
-    pub pcie_bus_id: String,
-    pub serial: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct DiskInfo {
-    pub name: String,                    // "nvme0n1", "sda"
-    pub model: String,
-    pub serial: Option<String>,
-    pub capacity_mb: u64,
-    pub interface: String,               // "NVMe", "SAS", "SATA"
-    pub firmware: Option<String>,
-    pub smart_healthy: Option<bool>,
-    pub rotational: bool,                // true=HDD, false=SSD/NVMe
-}
-
-#[derive(Serialize)]
-pub struct NetworkInfo {
-    pub name: String,                    // "eno1", "eth0"
-    pub mac: String,
-    pub speed_mbps: Option<u64>,         // 25000
-    pub mtu: u32,                        // 9000
-    pub driver: Option<String>,          // "mlx5_core", "i40e"
-    pub firmware: Option<String>,
-    pub ipv4: Vec<String>,
-    pub ipv6: Vec<String>,
-}
-
-#[derive(Serialize)]
-pub struct BiosInfo {
-    pub vendor: String,                  // "Dell Inc."
-    pub version: String,
-    pub release_date: String,
-    pub product_name: String,            // "PowerEdge R750"
-    pub serial: Option<String>,
+impl InventoryCollector {
+    pub async fn collect_full_inventory(&mut self) -> Result<SystemInventory, InventoryError> {
+        let hostname = hostname::get()?.to_string_lossy().into_owned();
+        
+        let inventory = SystemInventory {
+            hostname,
+            collected_at: SystemTime::now(),
+            os: self.collect_os_info().await?,
+            cpu: self.collect_cpu_info().await?,
+            memory: self.collect_memory_info().await?,
+            disks: self.collect_disk_info().await?,
+            network: self.collect_network_info().await?,
+            gpu: if cfg!(feature = "gpu") {
+                self.collect_gpu_info().await?
+            } else {
+                None
+            },
+            chassis: self.collect_chassis_info().await.ok(),
+        };
+        
+        Ok(inventory)
+    }
+    
+    async fn collect_cpu_info(&self) -> Result<CpuInfo, InventoryError> {
+        let cpuinfo_content = fs::read_to_string("/proc/cpuinfo").await?;
+        let topology = CpuTopology::discover()?;
+        
+        // Parse CPU model, vendor, features, etc.
+        let cpu_info = parse_cpuinfo(&cpuinfo_content)?;
+        
+        Ok(CpuInfo {
+            model: cpu_info.model_name,
+            vendor: cpu_info.vendor_id,
+            sockets: topology.sockets.len() as u32,
+            cores_per_socket: topology.total_cores / topology.sockets.len() as u32,
+            threads_per_core: detect_hyperthreading(&topology),
+            architecture: std::env::consts::ARCH.to_string(),
+            features: cpu_info.flags,
+            cache_l1_kb: cpu_info.cache_l1_kb,
+            cache_l2_kb: cpu_info.cache_l2_kb,
+            cache_l3_kb: cpu_info.cache_l3_kb,
+            microcode: cpu_info.microcode,
+            frequency_mhz: cpu_info.cpu_mhz,
+        })
+    }
+    
+    async fn collect_memory_info(&self) -> Result<MemoryInfo, InventoryError> {
+        let meminfo_content = fs::read_to_string("/proc/meminfo").await?;
+        let meminfo = parse_meminfo(&meminfo_content)?;
+        
+        // Detect ECC support
+        let ecc_supported = fs::metadata("/sys/devices/system/edac/mc0").await.is_ok();
+        
+        // Try to get DIMM information (requires root for dmidecode)
+        let dimms = if can_run_dmidecode().await {
+            collect_dimm_info().await.unwrap_or_default()
+        } else {
+            vec![]
+        };
+        
+        Ok(MemoryInfo {
+            total_bytes: meminfo.mem_total * 1024,
+            dimm_count: dimms.len() as u32,
+            dimms,
+            ecc_supported,
+            numa_nodes: detect_numa_memory().await?,
+        })
+    }
 }
 ```
 
-### 6.4 수집 소스 및 권한
+### 6.2 DIMM Information (Root Required)
 
+```rust
+async fn collect_dimm_info() -> Result<Vec<DimmInfo>, InventoryError> {
+    // Execute dmidecode --type memory
+    let output = tokio::process::Command::new("dmidecode")
+        .args(&["--type", "memory"])
+        .output()
+        .await?;
+    
+    if !output.status.success() {
+        return Err(InventoryError::DmidecodeError);
+    }
+    
+    let dmidecode_output = String::from_utf8(output.stdout)?;
+    parse_dmidecode_memory(&dmidecode_output)
+}
+
+fn parse_dmidecode_memory(output: &str) -> Result<Vec<DimmInfo>, InventoryError> {
+    let mut dimms = Vec::new();
+    let mut current_dimm: Option<DimmInfo> = None;
+    
+    for line in output.lines() {
+        let line = line.trim();
+        
+        if line.starts_with("Handle") && line.contains("Memory Device") {
+            if let Some(dimm) = current_dimm.take() {
+                if dimm.size_mb > 0 {  // Only include populated DIMMs
+                    dimms.push(dimm);
+                }
+            }
+            current_dimm = Some(DimmInfo::default());
+        } else if let Some(ref mut dimm) = current_dimm {
+            if line.starts_with("Locator:") {
+                dimm.locator = line.split(':').nth(1).unwrap_or("").trim().to_string();
+            } else if line.starts_with("Size:") {
+                dimm.size_mb = parse_memory_size(line.split(':').nth(1).unwrap_or("").trim())?;
+            } else if line.starts_with("Type:") {
+                dimm.memory_type = line.split(':').nth(1).unwrap_or("").trim().to_string();
+            } else if line.starts_with("Speed:") {
+                dimm.speed_mhz = parse_memory_speed(line.split(':').nth(1).unwrap_or("").trim())?;
+            } else if line.starts_with("Manufacturer:") {
+                dimm.manufacturer = line.split(':').nth(1).unwrap_or("").trim().to_string();
+            }
+        }
+    }
+    
+    // Don't forget the last DIMM
+    if let Some(dimm) = current_dimm {
+        if dimm.size_mb > 0 {
+            dimms.push(dimm);
+        }
+    }
+    
+    Ok(dimms)
+}
 ```
-┌────────────────────┬──────────────────────────┬────────────────┐
-│ 정보               │ 소스                      │ 권한           │
-├────────────────────┼──────────────────────────┼────────────────┤
-│ OS, kernel         │ /etc/os-release, uname    │ 없음           │
-│ CPU model/topology │ /proc/cpuinfo, lscpu      │ 없음           │
-│ CPU frequency      │ /sys/devices/system/cpu/   │ 없음           │
-│ Memory total       │ /proc/meminfo              │ 없음           │
-│ DIMM details       │ dmidecode -t 17            │ root/sudo ⚠️  │
-│ BIOS/Board         │ /sys/devices/virtual/dmi/  │ 없음 (부분)   │
-│                    │ dmidecode -t 0,2           │ root/sudo ⚠️  │
-│ GPU                │ NVML API                   │ video group    │
-│ Disk model/serial  │ /sys/block/*/device/       │ 없음           │
-│ SMART              │ smartctl                   │ root/sudo ⚠️  │
-│ Network interface  │ /sys/class/net/            │ 없음           │
-│ Network speed      │ ethtool (ioctl)            │ 없음           │
-│ ECC/EDAC           │ /sys/devices/system/edac/  │ 없음           │
-└────────────────────┴──────────────────────────┴────────────────┘
-
-⚠️ = Optional. root 없으면 해당 필드만 null, 나머지는 정상 수집
-```
-
-### 6.5 변경 감지
-
-인벤토리는 주기적으로 수집하되, 변경이 없으면 NATS 전송을 skip합니다 (대역폭 절약). 변경 감지는 JSON hash 비교로 수행합니다.
-
-```
-collect → hash(JSON) → 이전 hash와 비교
-                        │
-                  ┌─────┴─────┐
-                  │ 같음      │ 다름
-                  ▼           ▼
-               skip        publish to NATS
-              (로그만)     + 로그 "inventory changed"
-```
-
-예외: 첫 시작, 강제 전송 주기(기본 1시간)에는 무조건 전송.
 
 ---
 
-## 7. Analyzer 모듈
+## 7. Analyzer Module
 
-### 4.1 이상 탐지 알고리즘 비교
+### 7.1 Analysis Pipeline
 
-```
-┌──────────────────┬──────────────┬────────────────┬──────────────────┐
-│ 알고리즘         │ 감지 대상    │ 반응 속도      │ False Positive   │
-├──────────────────┼──────────────┼────────────────┼──────────────────┤
-│ Threshold        │ 절대 위험    │ ⚡ 즉시        │ 낮음 (명확)     │
-│ Z-Score          │ 통계적 이상  │ 🔄 1시간 학습  │ 중간            │
-│ EMA              │ 급격한 변화  │ ⚡ 수분 내     │ 중간            │
-│ Trend (LinReg)   │ 점진적 증가  │ 🐢 수시간      │ 낮음            │
-│ Leak Detection   │ 리소스 누수  │ 🐢 1시간+      │ 매우 낮음       │
-└──────────────────┴──────────────┴────────────────┴──────────────────┘
-```
-
-### 4.2 Threshold-based (임계값 기반)
-
-가장 기본적인 방법. 설정된 임계값을 초과하면 즉시 알림을 발생시킵니다.
-
-```
-                    ┌─── Emergency (99%)
-                    │ ┌─ Critical (95%)
-                    │ │ ┌─ Warn (90%)
- 100% ──────────────┤ │ │
-                    │ │ │
-  95% ──────────────┤─┤ │        ╭──╮
-                    │ │ │   ╭───╯  ╰──── value
-  90% ──────────────┤─┤─┤──╯
-                    │ │ │
-                    │ │ │
-   0% ──────────────┴─┴─┴──────────────────▶ time
-```
-
-```rust
-if metric.value > threshold.emergency → Alert(Emergency)
-if metric.value > threshold.critical  → Alert(Critical)
-if metric.value > threshold.warn      → Alert(Warn)
-```
-
-### 4.3 Z-Score (표준 편차 기반)
-
-최근 N개 샘플의 평균과 표준 편차를 계산하고, 현재 값이 몇 시그마 벗어났는지 판단합니다.
-
-```
-         mean
-          │
-          │     +1σ   +2σ   +3σ (anomaly!)
-          │      │     │     │
-  ────────┼──────┼─────┼─────┼──────────
-          │      │     │     │
-          │      68%   95%   99.7%
-          │
-     ╭─╮  │        ╭╮
-    ╭╯ ╰╮ │   ╭───╯╰─── ← 3σ 이상 → Alert!
-  ──╯   ╰─┼──╯
-          │
-  ────────┼──────────────────────────▶ time
-```
-
-```rust
-z = (current - mean) / stddev
-if z.abs() > 3.0 → anomaly
-```
-
-- 윈도우 크기: 기본 360 샘플 (10초 간격 = 1시간)
-- 최소 샘플 수: 30개 이상이어야 z-score 계산 활성화
-- **Online 알고리즘**: Welford's method로 mean/variance를 O(1) 업데이트
-
-### 4.4 Moving Average (EMA)
-
-Exponential Moving Average를 사용하여 급격한 변화를 감지합니다.
-
-```
-          EMA (smooth line)
-           │
-   ╭─╮    │         ╭╮ ← spike: deviation > threshold
-  ╭╯ ╰╮   │    ╭───╯╰───╮
-  ╯   ╰───┼───╯         ╰───
-           │
-  ─────────┼──────────────────▶ time
-
-  ema_new = α × current + (1 - α) × ema_old
-  deviation = |current - ema| / ema
-  if deviation > threshold → anomaly
-```
-
-- alpha: 0.1 (느린 적응) ~ 0.3 (빠른 적응), 설정 가능
-
-### 4.5 트렌드 분석 (Linear Regression)
-
-최근 N시간의 데이터에 선형 회귀를 적용하여 리소스 소진 시점을 예측합니다.
-
-```
-                                      ╱ 예측선 (extrapolation)
-  100% ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ╱─ ─ Disk Full!
-                                 ╱      ↑
-                              ╱         exhaustion_time
-   80% ─────────────────── ╱──── threshold
-                         ╱
-          ╭─────────── ╱    ← 실제 데이터 + regression line
-   60% ──╱────────────╱
-        ╱  slope > 0
-   40% ╱
-       │
-       └───────────────────────────▶ time
-           t_now              t_exhaust
-
-  slope = Σ((x - x̄)(y - ȳ)) / Σ((x - x̄)²)
-  exhaustion_time = (threshold - current) / slope
-```
-
-- 디스크: slope > 0이고 **24시간 내** 용량 소진 예측 시 알림
-- 메모리: slope > 0이고 **6시간 내** OOM 예측 시 알림
-- 구현: `OnlineLinearRegression` — Welford 변형, O(1) 추가/제거
-
-### 4.6 누수 감지 (Leak Detection)
-
-```
-  RSS (MB)
-   │
-   │                              ╭──── 단조 증가 패턴
-   │                         ╭───╯     R² > 0.8
-   │                    ╭───╯          → Memory Leak!
-   │               ╭───╯
-   │          ╭───╯
-   │     ╭───╯
-   │╭───╯
-   │╯
-   └─────────────────────────────▶ time
-        1h+  (min observation period)
-
-  조건:
-  1. rss_slope > threshold_mb_per_hour
-  2. r_squared > 0.8 (강한 선형 상관)
-  3. duration > min_observation_period (1h+)
-  → Alert(memory_leak, pid, process_name)
-
-  FD 누수도 동일 로직 적용
-```
-
-### 4.7 Analyzer Trait
+Each collected metric passes through multiple analyzers:
 
 ```rust
 pub trait Analyzer: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
+    fn analyze(&mut self, sample: &MetricSample, history: &MetricHistory) -> Option<Alert>;
+}
 
-    /// 분석 수행, Alert 목록 반환
-    fn analyze(&mut self, storage: &Storage) -> Vec<Alert>;
+pub struct AnalyzerChain {
+    analyzers: Vec<Box<dyn Analyzer>>,
+}
+
+impl AnalyzerChain {
+    pub fn new() -> Self {
+        Self {
+            analyzers: vec![
+                Box::new(ThresholdAnalyzer::new()),
+                Box::new(ZScoreAnalyzer::new()),
+                Box::new(EmaAnalyzer::new()),
+                Box::new(TrendAnalyzer::new()),
+                Box::new(LeakAnalyzer::new()),
+            ],
+        }
+    }
+    
+    pub fn analyze(&mut self, sample: &MetricSample, history: &MetricHistory) -> Vec<Alert> {
+        self.analyzers
+            .iter_mut()
+            .filter_map(|analyzer| analyzer.analyze(sample, history))
+            .collect()
+    }
+}
+```
+
+### 7.2 Threshold Analyzer
+
+Simple but critical: immediate alerting on threshold breaches.
+
+```rust
+pub struct ThresholdAnalyzer {
+    thresholds: HashMap<MetricId, ThresholdConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ThresholdConfig {
+    pub warn_threshold: Option<f64>,
+    pub critical_threshold: Option<f64>,
+    pub comparison: Comparison,
+    pub hysteresis_pct: f64,  // Prevent flapping
+}
+
+#[derive(Debug, Clone)]
+pub enum Comparison {
+    GreaterThan,
+    LessThan,
+}
+
+impl Analyzer for ThresholdAnalyzer {
+    fn name(&self) -> &'static str { "threshold" }
+    
+    fn analyze(&mut self, sample: &MetricSample, history: &MetricHistory) -> Option<Alert> {
+        let config = self.thresholds.get(&sample.metric_id)?;
+        
+        // Check critical threshold first
+        if let Some(crit_threshold) = config.critical_threshold {
+            if breaches_threshold(sample.value, crit_threshold, &config.comparison) {
+                // Check if we're still above hysteresis threshold to avoid flapping
+                if should_trigger_alert(sample, history, crit_threshold, config) {
+                    return Some(Alert {
+                        timestamp: sample.timestamp,
+                        severity: Severity::Critical,
+                        metric_id: sample.metric_id.clone(),
+                        value: sample.value,
+                        threshold: Some(crit_threshold),
+                        message: format!(
+                            "{} {} {} (threshold: {})",
+                            sample.metric_id,
+                            comparison_operator(&config.comparison),
+                            sample.value,
+                            crit_threshold
+                        ),
+                        labels: sample.labels.clone(),
+                        analyzer: "threshold".to_string(),
+                    });
+                }
+            }
+        }
+        
+        // Check warning threshold
+        if let Some(warn_threshold) = config.warn_threshold {
+            if breaches_threshold(sample.value, warn_threshold, &config.comparison) {
+                if should_trigger_alert(sample, history, warn_threshold, config) {
+                    return Some(Alert {
+                        timestamp: sample.timestamp,
+                        severity: Severity::Warning,
+                        metric_id: sample.metric_id.clone(),
+                        value: sample.value,
+                        threshold: Some(warn_threshold),
+                        message: format!(
+                            "{} {} {} (threshold: {})",
+                            sample.metric_id,
+                            comparison_operator(&config.comparison),
+                            sample.value,
+                            warn_threshold
+                        ),
+                        labels: sample.labels.clone(),
+                        analyzer: "threshold".to_string(),
+                    });
+                }
+            }
+        }
+        
+        None
+    }
+}
+
+fn should_trigger_alert(
+    sample: &MetricSample,
+    history: &MetricHistory,
+    threshold: f64,
+    config: &ThresholdConfig,
+) -> bool {
+    // Hysteresis: require value to go below (threshold - hysteresis) before triggering again
+    if let Some(last_alert_time) = history.last_alert_time(&sample.metric_id) {
+        if sample.timestamp.duration_since(last_alert_time).unwrap_or_default()
+            < Duration::from_secs(300)
+        {
+            // Within cooldown period - check hysteresis
+            let hysteresis_threshold = match config.comparison {
+                Comparison::GreaterThan => threshold * (1.0 - config.hysteresis_pct / 100.0),
+                Comparison::LessThan => threshold * (1.0 + config.hysteresis_pct / 100.0),
+            };
+            
+            // Check if any recent sample went below hysteresis threshold
+            let recent_samples = history.get_recent(&sample.metric_id, Duration::from_secs(300));
+            let crossed_hysteresis = recent_samples.iter().any(|s| {
+                match config.comparison {
+                    Comparison::GreaterThan => s.value < hysteresis_threshold,
+                    Comparison::LessThan => s.value > hysteresis_threshold,
+                }
+            });
+            
+            if !crossed_hysteresis {
+                return false;  // Still in hysteresis zone
+            }
+        }
+    }
+    
+    true
+}
+```
+
+### 7.3 Z-Score Analyzer
+
+Statistical anomaly detection using sliding window z-score:
+
+```rust
+pub struct ZScoreAnalyzer {
+    window_size: usize,
+    threshold: f64,
+}
+
+impl ZScoreAnalyzer {
+    pub fn new() -> Self {
+        Self {
+            window_size: 360,  // 1 hour at 10s intervals
+            threshold: 3.0,    // 3 standard deviations
+        }
+    }
+}
+
+impl Analyzer for ZScoreAnalyzer {
+    fn name(&self) -> &'static str { "zscore" }
+    
+    fn analyze(&mut self, sample: &MetricSample, history: &MetricHistory) -> Option<Alert> {
+        let recent_samples = history.get_recent(&sample.metric_id, Duration::from_secs(3600));
+        
+        if recent_samples.len() < 30 {
+            return None;  // Not enough history
+        }
+        
+        // Calculate mean and standard deviation
+        let values: Vec<f64> = recent_samples.iter().map(|s| s.value).collect();
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let variance = values.iter()
+            .map(|v| (v - mean).powi(2))
+            .sum::<f64>() / values.len() as f64;
+        let std_dev = variance.sqrt();
+        
+        if std_dev < 1e-6 {
+            return None;  // No variation
+        }
+        
+        // Calculate Z-score for current sample
+        let zscore = (sample.value - mean) / std_dev;
+        
+        if zscore.abs() >= self.threshold {
+            let severity = if zscore.abs() >= 4.0 {
+                Severity::Critical
+            } else {
+                Severity::Warning
+            };
+            
+            Some(Alert {
+                timestamp: sample.timestamp,
+                severity,
+                metric_id: sample.metric_id.clone(),
+                value: sample.value,
+                threshold: None,
+                message: format!(
+                    "{} anomaly detected: {} (z-score: {:.2}, mean: {:.2})",
+                    sample.metric_id,
+                    sample.value,
+                    zscore,
+                    mean
+                ),
+                labels: sample.labels.clone(),
+                analyzer: "zscore".to_string(),
+            })
+        } else {
+            None
+        }
+    }
+}
+```
+
+### 7.4 Trend Analyzer
+
+Predict resource depletion using linear regression:
+
+```rust
+pub struct TrendAnalyzer {
+    min_samples: usize,
+    prediction_horizon: Duration,
+}
+
+impl TrendAnalyzer {
+    pub fn new() -> Self {
+        Self {
+            min_samples: 20,
+            prediction_horizon: Duration::from_secs(6 * 3600),  // 6 hours
+        }
+    }
+}
+
+impl Analyzer for TrendAnalyzer {
+    fn name(&self) -> &'static str { "trend" }
+    
+    fn analyze(&mut self, sample: &MetricSample, history: &MetricHistory) -> Option<Alert> {
+        // Only analyze metrics that can be "depleted"
+        if !is_depletable_metric(&sample.metric_id) {
+            return None;
+        }
+        
+        let window = Duration::from_secs(6 * 3600);  // 6 hour window
+        let recent_samples = history.get_recent(&sample.metric_id, window);
+        
+        if recent_samples.len() < self.min_samples {
+            return None;
+        }
+        
+        // Perform linear regression
+        let regression = linear_regression(&recent_samples)?;
+        
+        // Predict future values
+        let now = sample.timestamp;
+        let future_time = now + self.prediction_horizon;
+        let predicted_value = regression.predict(future_time);
+        
+        // Check if predicted value breaches critical thresholds
+        let critical_level = get_critical_level(&sample.metric_id);
+        
+        if will_breach_threshold(predicted_value, critical_level, &sample.metric_id) {
+            let time_to_breach = regression.time_to_value(critical_level);
+            let severity = if time_to_breach < Duration::from_secs(3600) {
+                Severity::Critical  // Less than 1 hour
+            } else if time_to_breach < Duration::from_secs(24 * 3600) {
+                Severity::Warning   // Less than 24 hours
+            } else {
+                return None;        // More than 24 hours - no immediate concern
+            };
+            
+            Some(Alert {
+                timestamp: sample.timestamp,
+                severity,
+                metric_id: sample.metric_id.clone(),
+                value: sample.value,
+                threshold: Some(critical_level),
+                message: format!(
+                    "{} trending towards {} in {} (current: {}, rate: {:.2}/hour)",
+                    sample.metric_id,
+                    critical_level,
+                    humantime::format_duration(time_to_breach),
+                    sample.value,
+                    regression.slope * 3600.0  // per hour
+                ),
+                labels: sample.labels.clone(),
+                analyzer: "trend".to_string(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+struct LinearRegression {
+    slope: f64,
+    intercept: f64,
+    r_squared: f64,
+}
+
+impl LinearRegression {
+    fn predict(&self, time: SystemTime) -> f64 {
+        let x = time.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        self.slope * x + self.intercept
+    }
+    
+    fn time_to_value(&self, target_value: f64) -> Duration {
+        let target_time = (target_value - self.intercept) / self.slope;
+        Duration::from_secs_f64(target_time.max(0.0))
+    }
+}
+
+fn linear_regression(samples: &[MetricSample]) -> Option<LinearRegression> {
+    if samples.len() < 2 {
+        return None;
+    }
+    
+    let n = samples.len() as f64;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_xy = 0.0;
+    let mut sum_xx = 0.0;
+    
+    for sample in samples {
+        let x = sample.timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let y = sample.value;
+        
+        sum_x += x;
+        sum_y += y;
+        sum_xy += x * y;
+        sum_xx += x * x;
+    }
+    
+    let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x);
+    let intercept = (sum_y - slope * sum_x) / n;
+    
+    // Calculate R-squared
+    let y_mean = sum_y / n;
+    let mut ss_tot = 0.0;
+    let mut ss_res = 0.0;
+    
+    for sample in samples {
+        let x = sample.timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let y = sample.value;
+        let y_pred = slope * x + intercept;
+        
+        ss_tot += (y - y_mean).powi(2);
+        ss_res += (y - y_pred).powi(2);
+    }
+    
+    let r_squared = 1.0 - (ss_res / ss_tot);
+    
+    // Only return if we have a reasonable fit
+    if r_squared > 0.7 {
+        Some(LinearRegression { slope, intercept, r_squared })
+    } else {
+        None
+    }
+}
+```
+
+### 7.5 Leak Detector
+
+Detect memory and file descriptor leaks:
+
+```rust
+pub struct LeakAnalyzer {
+    min_observation_time: Duration,
+    r_squared_threshold: f64,
+}
+
+impl LeakAnalyzer {
+    pub fn new() -> Self {
+        Self {
+            min_observation_time: Duration::from_secs(30 * 60),  // 30 minutes
+            r_squared_threshold: 0.8,
+        }
+    }
+}
+
+impl Analyzer for LeakAnalyzer {
+    fn name(&self) -> &'static str { "leak" }
+    
+    fn analyze(&mut self, sample: &MetricSample, history: &MetricHistory) -> Option<Alert> {
+        // Only analyze metrics that can leak (memory, file descriptors)
+        if !is_leak_metric(&sample.metric_id) {
+            return None;
+        }
+        
+        let recent_samples = history.get_recent(&sample.metric_id, self.min_observation_time);
+        
+        if recent_samples.len() < 10 {
+            return None;  // Not enough data
+        }
+        
+        // Check for monotonic increase with good linear fit
+        let regression = linear_regression(&recent_samples)?;
+        
+        // Must have positive slope (increasing) and high R²
+        if regression.slope > 0.0 && regression.r_squared >= self.r_squared_threshold {
+            // Calculate rate of increase
+            let rate_per_hour = regression.slope * 3600.0;
+            
+            let severity = if rate_per_hour > get_leak_critical_rate(&sample.metric_id) {
+                Severity::Critical
+            } else if rate_per_hour > get_leak_warn_rate(&sample.metric_id) {
+                Severity::Warning
+            } else {
+                return None;
+            };
+            
+            Some(Alert {
+                timestamp: sample.timestamp,
+                severity,
+                metric_id: sample.metric_id.clone(),
+                value: sample.value,
+                threshold: None,
+                message: format!(
+                    "Possible {} leak detected: increasing at {:.2}/hour (R² = {:.3})",
+                    get_leak_type(&sample.metric_id),
+                    rate_per_hour,
+                    regression.r_squared
+                ),
+                labels: sample.labels.clone(),
+                analyzer: "leak".to_string(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+fn is_leak_metric(metric_id: &MetricId) -> bool {
+    matches!(
+        metric_id.name.as_str(),
+        "proc.rss_bytes" | "proc.fd_count" | "fd.system_used"
+    )
+}
+
+fn get_leak_type(metric_id: &MetricId) -> &'static str {
+    match metric_id.name.as_str() {
+        "proc.rss_bytes" => "memory",
+        "proc.fd_count" | "fd.system_used" => "file descriptor",
+        _ => "resource",
+    }
 }
 ```
 
 ---
 
-## 8. Alerter 모듈
+## 8. Alerter Module
 
-### 5.1 Alert 구조체
+### 8.1 Alert Processing Pipeline
 
 ```rust
-pub struct Alert {
-    pub id: Uuid,
-    pub timestamp: DateTime<Utc>,
-    pub hostname: String,
-    pub severity: Severity,
-    pub metric: MetricId,
-    pub value: f64,
-    pub threshold: f64,
-    pub message: String,
-    pub labels: HashMap<String, String>,
-    pub duration: Option<Duration>,
-    pub analyzer: String,                 // "threshold", "zscore", "trend"
+pub struct AlertManager {
+    deduplicator: AlertDeduplicator,
+    rate_limiter: RateLimiter,
+    channels: Vec<Box<dyn AlertChannel>>,
+    severity_router: SeverityRouter,
+    grouper: AlertGrouper,
 }
 
-pub enum Severity {
-    Info,       // 참고 정보, 로그만
-    Warn,       // 주의 필요
-    Critical,   // 즉시 조치 필요
-    Emergency,  // 시스템 장애 임박
+impl AlertManager {
+    pub async fn process_alert(&mut self, alert: Alert) -> Result<(), AlertError> {
+        // 1. Deduplication
+        if self.deduplicator.should_suppress(&alert) {
+            debug!("Alert suppressed by deduplication: {:?}", alert);
+            return Ok(());
+        }
+        
+        // 2. Severity routing - determine which channels should receive this alert
+        let target_channels = self.severity_router.route_alert(&alert);
+        
+        // 3. Rate limiting per channel
+        let channels_to_send: Vec<_> = target_channels
+            .into_iter()
+            .filter(|&channel_id| self.rate_limiter.check_and_consume(channel_id))
+            .collect();
+        
+        if channels_to_send.is_empty() {
+            warn!("All channels rate-limited for alert: {:?}", alert);
+            return Ok(());
+        }
+        
+        // 4. Grouping (optional) - combine related alerts
+        if let Some(grouped_alert) = self.grouper.maybe_group(alert) {
+            // 5. Dispatch to channels
+            for &channel_id in &channels_to_send {
+                if let Some(channel) = self.channels.get_mut(channel_id) {
+                    if let Err(e) = channel.send_alert(&grouped_alert).await {
+                        error!("Failed to send alert via {}: {}", channel.name(), e);
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
 }
 ```
 
-### 5.2 Alert Manager 파이프라인
+### 8.2 Deduplication
 
-```
- Alert 수신
-     │
-     ▼
- ┌──────────────────┐
- │  Deduplication   │  (metric, severity, label_hash) 기준
- │                  │  같은 키 → dedup_window(10분) 내 재발송 차단
- │  HashMap<Key,    │
- │    Instant>      │
- └────────┬─────────┘
-          │ (unique alerts only)
-          ▼
- ┌──────────────────┐
- │  Severity Router │  severity에 따라 전송 채널 결정
- │                  │
- │  Info     → log  │
- │  Warn     → configured channels
- │  Critical → all channels + @mention
- │  Emergency→ all channels + bypass rate limit
- └────────┬─────────┘
-          │
-          ▼
- ┌──────────────────┐
- │  Rate Limiter    │  Token Bucket per channel
- │                  │
- │  tokens: 10/min  │  리필 속도: 1 token / 6초
- │  burst: 5        │  Emergency는 bypass 가능
- └────────┬─────────┘
-          │
-          ▼
- ┌──────────────────┐
- │  Alert Grouping  │  5초 윈도우 내 같은 호스트의 알림 묶기
- │  (batch window)  │
- └────────┬─────────┘
-          │
-          ▼
- ┌──────────────────┐
- │  Channel Send    │  비동기 HTTP POST
- │  (with retry)    │  실패 시 3회 retry (exponential backoff)
- └──────────────────┘
+```rust
+pub struct AlertDeduplicator {
+    recent_alerts: HashMap<AlertKey, AlertEntry>,
+    cleanup_interval: Duration,
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct AlertKey {
+    metric_id: MetricId,
+    severity: Severity,
+    labels_hash: u64,  // Hash of labels for efficiency
+}
+
+struct AlertEntry {
+    last_seen: SystemTime,
+    count: u32,
+    dedup_window: Duration,
+}
+
+impl AlertDeduplicator {
+    pub fn should_suppress(&mut self, alert: &Alert) -> bool {
+        let key = AlertKey {
+            metric_id: alert.metric_id.clone(),
+            severity: alert.severity,
+            labels_hash: calculate_labels_hash(&alert.labels),
+        };
+        
+        let dedup_window = self.get_dedup_window(alert.severity);
+        
+        if let Some(entry) = self.recent_alerts.get_mut(&key) {
+            let time_since_last = alert.timestamp
+                .duration_since(entry.last_seen)
+                .unwrap_or_default();
+                
+            if time_since_last < entry.dedup_window {
+                entry.count += 1;
+                return true;  // Suppress
+            } else {
+                // Outside dedup window - allow and reset
+                entry.last_seen = alert.timestamp;
+                entry.count = 1;
+                return false;
+            }
+        } else {
+            // First time seeing this alert
+            self.recent_alerts.insert(key, AlertEntry {
+                last_seen: alert.timestamp,
+                count: 1,
+                dedup_window,
+            });
+            return false;
+        }
+    }
+    
+    fn get_dedup_window(&self, severity: Severity) -> Duration {
+        match severity {
+            Severity::Emergency => Duration::from_secs(0),     // Never suppress
+            Severity::Critical => Duration::from_secs(60),     // 1 minute
+            Severity::Warning => Duration::from_secs(300),     // 5 minutes
+            Severity::Info => Duration::from_secs(600),        // 10 minutes
+        }
+    }
+}
 ```
 
-### 5.3 채널 추상화
+### 8.3 Rate Limiting
+
+```rust
+pub struct RateLimiter {
+    buckets: HashMap<usize, TokenBucket>,
+}
+
+struct TokenBucket {
+    tokens: f64,
+    max_tokens: f64,
+    refill_rate: f64,  // tokens per second
+    last_refill: Instant,
+}
+
+impl RateLimiter {
+    pub fn check_and_consume(&mut self, channel_id: usize) -> bool {
+        let bucket = self.buckets.entry(channel_id)
+            .or_insert_with(|| TokenBucket::new(10.0, 1.0 / 60.0)); // 10 tokens, 1 per minute
+            
+        bucket.refill();
+        
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl TokenBucket {
+    fn new(max_tokens: f64, refill_rate: f64) -> Self {
+        Self {
+            tokens: max_tokens,
+            max_tokens,
+            refill_rate,
+            last_refill: Instant::now(),
+        }
+    }
+    
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        let tokens_to_add = elapsed * self.refill_rate;
+        
+        self.tokens = (self.tokens + tokens_to_add).min(self.max_tokens);
+        self.last_refill = now;
+    }
+}
+```
+
+### 8.4 Alert Channels
 
 ```rust
 #[async_trait]
 pub trait AlertChannel: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
+    async fn send_alert(&mut self, alert: &Alert) -> Result<(), ChannelError>;
+}
 
-    async fn send(&self, alert: &Alert) -> Result<()>;
+pub struct DiscordChannel {
+    webhook_url: String,
+    client: reqwest::Client,
+}
 
-    fn supports_batch(&self) -> bool { false }
-
-    async fn send_batch(&self, alerts: &[Alert]) -> Result<()> {
-        for alert in alerts {
-            self.send(alert).await?;
+#[async_trait]
+impl AlertChannel for DiscordChannel {
+    fn name(&self) -> &'static str { "discord" }
+    
+    async fn send_alert(&mut self, alert: &Alert) -> Result<(), ChannelError> {
+        let embed = DiscordEmbed {
+            title: format!("[{}] {}", severity_emoji(alert.severity), alert.metric_id),
+            description: alert.message.clone(),
+            color: severity_color(alert.severity),
+            timestamp: alert.timestamp,
+            fields: vec![
+                EmbedField { name: "Value".to_string(), value: alert.value.to_string(), inline: true },
+                EmbedField { name: "Host".to_string(), value: hostname().unwrap_or_default(), inline: true },
+            ],
+        };
+        
+        let payload = DiscordWebhookPayload {
+            username: Some("SysOps Agent".to_string()),
+            embeds: vec![embed],
+        };
+        
+        let response = self.client
+            .post(&self.webhook_url)
+            .json(&payload)
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            return Err(ChannelError::HttpError(response.status()));
         }
+        
         Ok(())
     }
 }
-```
 
-### 5.4 채널별 전송 형식
+fn severity_emoji(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Info => "ℹ️",
+        Severity::Warning => "⚠️",
+        Severity::Critical => "🚨",
+        Severity::Emergency => "🔥",
+    }
+}
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Discord (Embed)                                                │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ 🔴 CRITICAL — CPU Usage Alert                            │  │
-│  │ ─────────────────────────────────────────                 │  │
-│  │ **Host:** web-server-01                                   │  │
-│  │ **Metric:** CPU Usage                                     │  │
-│  │ **Value:** 95.2% (threshold: 90%)                         │  │
-│  │ **Duration:** 5m 30s                                      │  │
-│  │ **Analyzer:** threshold                                   │  │
-│  │ **Time:** 2026-02-22 16:30:00 KST                        │  │
-│  │ ─────────────────────────────────────────                 │  │
-│  │ @devops                                                   │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│  Color: 🟡warn=orange  🔴critical=red  ⚫emergency=dark red   │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│  Slack (Block Kit)                                              │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ :red_circle: *CRITICAL — CPU Usage Alert*                 │  │
-│  │ ───────────────────────────────                           │  │
-│  │ *Host:* web-server-01                                     │  │
-│  │ *CPU Usage:* 95.2% → threshold 90%                        │  │
-│  │ *Duration:* 5 minutes                                     │  │
-│  │ ───────────────────────────────                           │  │
-│  │ <@U12345>                                                 │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│  Telegram (HTML)                                                │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ 🔴 <b>CRITICAL</b> — CPU Usage Alert                     │  │
-│  │                                                           │  │
-│  │ 🖥 Host: <code>web-server-01</code>                       │  │
-│  │ 📊 CPU Usage: <b>95.2%</b> (threshold: 90%)              │  │
-│  │ ⏱ Duration: 5m 30s                                       │  │
-│  │ 🕐 2026-02-22 16:30:00 KST                               │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│  Webhook (JSON)                                                 │
-│  {                                                              │
-│    "hostname": "web-server-01",                                 │
-│    "timestamp": "2026-02-22T07:30:00Z",                         │
-│    "severity": "critical",                                      │
-│    "metric": "cpu_usage_percent",                                │
-│    "value": 95.2,                                                │
-│    "threshold": 90.0,                                            │
-│    "message": "CPU usage 95.2% exceeds threshold 90%",          │
-│    "labels": {"core": "all"},                                    │
-│    "duration_secs": 330,                                         │
-│    "analyzer": "threshold"                                       │
-│  }                                                              │
-└─────────────────────────────────────────────────────────────────┘
+fn severity_color(severity: Severity) -> u32 {
+    match severity {
+        Severity::Info => 0x3498db,      // Blue
+        Severity::Warning => 0xf39c12,   // Orange
+        Severity::Critical => 0xe74c3c,  // Red
+        Severity::Emergency => 0x9b59b6, // Purple
+    }
+}
 ```
 
 ---
 
-## 9. NATS 텔레메트리
+## 9. NATS Telemetry
 
-### 9.1 개요
-
-NATS는 경량 메시징 시스템으로, SysOps Agent가 메트릭/알림/인벤토리를 중앙 시스템에 전송하는 데 사용됩니다. 기존 알림 채널(Discord, Slack 등)이 **이벤트 기반 알림**이라면, NATS는 **주기적 텔레메트리** 용도입니다.
-
-### 9.2 아키텍처
-
-```
-┌──────────── Agent Side ────────────┐     ┌──────── NATS Server ────────┐
-│                                     │     │                             │
-│  ┌───────────────┐                  │     │  Subject Hierarchy:         │
-│  │ NATS Publisher │                 │     │                             │
-│  │               │   async-nats    │     │  sysops.                    │
-│  │  ┌──────────┐ │   (Rust crate)  │     │  ├── {hostname}.           │
-│  │  │ Metrics  │─┤────────────────▶│────▶│  │   ├── metrics   (30s)   │
-│  │  │ Buffer   │ │   NATS protocol │     │  │   ├── alerts    (event) │
-│  │  ├──────────┤ │   (TCP:4222)    │     │  │   ├── inventory (5min)  │
-│  │  │Inventory │─┤                 │     │  │   └── heartbeat (60s)   │
-│  │  ├──────────┤ │                 │     │  ├── {hostname2}.          │
-│  │  │ Alerts   │─┤                 │     │  │   └── ...               │
-│  │  ├──────────┤ │                 │     │  └── ...                   │
-│  │  │Heartbeat │─┤                 │     │                             │
-│  │  └──────────┘ │                 │     └──────────────┬──────────────┘
-│  └───────────────┘                  │                    │
-│                                     │          subscribe │
-└─────────────────────────────────────┘                    │
-                                                ┌──────────┼──────────┐
-                                                ▼          ▼          ▼
-                                          ┌──────────┐ ┌────────┐ ┌──────┐
-                                          │Dashboard │ │ CMDB   │ │Alert │
-                                          │(Grafana) │ │Invent. │ │Gate  │
-                                          └──────────┘ └────────┘ └──────┘
-```
-
-### 9.3 Subject 설계
-
-```
-sysops.                                  # 최상위 prefix (설정 가능)
-├── {hostname}.metrics                   # 메트릭 배치 (JSON array)
-│     interval: 30초
-│     payload: { hostname, timestamp, metrics: [{name, value, labels}...] }
-│     compression: zstd (optional)
-│
-├── {hostname}.alerts                    # 이상 탐지 알림
-│     trigger: 이벤트 발생 시
-│     payload: { hostname, timestamp, severity, metric, value, message }
-│
-├── {hostname}.inventory                 # 시스템 인벤토리
-│     interval: 300초 (변경 시만 전송, 1시간마다 강제)
-│     payload: SystemInfo (전체 하드웨어/소프트웨어 스펙)
-│
-└── {hostname}.heartbeat                 # 생존 신호
-      interval: 60초
-      payload: { hostname, timestamp, uptime_secs, agent_version, status }
-```
-
-### 9.4 NATS Publisher 구현
+### 9.1 NATS Integration
 
 ```rust
+#[cfg(feature = "nats")]
 pub struct NatsPublisher {
     client: async_nats::Client,
     subject_prefix: String,
     hostname: String,
-
-    // 전송 주기 관리
-    metrics_interval: Duration,
-    inventory_interval: Duration,
-    heartbeat_interval: Duration,
-
-    // 배치 버퍼
     metrics_buffer: Vec<MetricSample>,
-    batch_size: usize,
-
-    // 인벤토리 변경 감지
-    last_inventory_hash: Option<u64>,
-
-    // 압축
-    compression_enabled: bool,
+    last_flush: Instant,
+    flush_interval: Duration,
 }
 
-#[async_trait]
+#[cfg(feature = "nats")]
 impl NatsPublisher {
-    async fn publish_metrics(&self, metrics: &[MetricSample]) -> Result<()> {
-        let subject = format!("{}.{}.metrics", self.subject_prefix, self.hostname);
-        let payload = serde_json::to_vec(&MetricsBatch {
-            hostname: &self.hostname,
-            timestamp: Utc::now(),
-            metrics,
-        })?;
-
-        let payload = if self.compression_enabled {
-            zstd::encode_all(&payload[..], 3)?
+    pub async fn new(config: &NatsConfig) -> Result<Self, NatsError> {
+        let client = if let Some(creds_file) = &config.credential_file {
+            async_nats::ConnectOptions::with_credentials_file(creds_file)
+                .await?
+                .connect(&config.url)
+                .await?
+        } else if let Some(token) = &config.token {
+            async_nats::ConnectOptions::with_token(token)
+                .connect(&config.url)
+                .await?
         } else {
-            payload
+            async_nats::connect(&config.url).await?
         };
-
-        self.client.publish(subject, payload.into()).await?;
+        
+        Ok(Self {
+            client,
+            subject_prefix: config.subject_prefix.clone(),
+            hostname: hostname::get()?.to_string_lossy().into_owned(),
+            metrics_buffer: Vec::with_capacity(config.batch_size),
+            last_flush: Instant::now(),
+            flush_interval: Duration::from_secs(config.metrics_interval_secs),
+        })
+    }
+    
+    pub async fn publish_metric(&mut self, sample: MetricSample) -> Result<(), NatsError> {
+        self.metrics_buffer.push(sample);
+        
+        // Flush if buffer is full or time interval elapsed
+        if self.metrics_buffer.len() >= self.metrics_buffer.capacity()
+            || self.last_flush.elapsed() >= self.flush_interval
+        {
+            self.flush_metrics().await?;
+        }
+        
         Ok(())
     }
-
-    async fn publish_inventory(&mut self, info: &SystemInfo) -> Result<()> {
-        let payload = serde_json::to_vec(info)?;
-        let hash = hash64(&payload);
-
-        // 변경 감지: hash 같으면 skip
-        if Some(hash) == self.last_inventory_hash {
+    
+    async fn flush_metrics(&mut self) -> Result<(), NatsError> {
+        if self.metrics_buffer.is_empty() {
             return Ok(());
         }
-
+        
+        let payload = MetricsBatch {
+            hostname: self.hostname.clone(),
+            timestamp: SystemTime::now(),
+            metrics: std::mem::take(&mut self.metrics_buffer),
+        };
+        
+        let subject = format!("{}.{}.metrics", self.subject_prefix, self.hostname);
+        let data = serde_json::to_vec(&payload)?;
+        
+        // Optional compression
+        let data = if self.compression_enabled {
+            compress_payload(&data)?
+        } else {
+            data
+        };
+        
+        self.client.publish(subject, data.into()).await?;
+        self.last_flush = Instant::now();
+        
+        Ok(())
+    }
+    
+    pub async fn publish_alert(&mut self, alert: &Alert) -> Result<(), NatsError> {
+        let subject = format!("{}.{}.alerts", self.subject_prefix, self.hostname);
+        let data = serde_json::to_vec(alert)?;
+        
+        self.client.publish(subject, data.into()).await?;
+        Ok(())
+    }
+    
+    pub async fn publish_inventory(&mut self, inventory: &SystemInventory) -> Result<(), NatsError> {
         let subject = format!("{}.{}.inventory", self.subject_prefix, self.hostname);
-        self.client.publish(subject, payload.into()).await?;
-        self.last_inventory_hash = Some(hash);
+        let data = serde_json::to_vec(inventory)?;
+        
+        self.client.publish(subject, data.into()).await?;
+        Ok(())
+    }
+    
+    pub async fn publish_heartbeat(&mut self) -> Result<(), NatsError> {
+        let heartbeat = Heartbeat {
+            hostname: self.hostname.clone(),
+            timestamp: SystemTime::now(),
+            uptime_secs: get_uptime_seconds()?,
+            agent_version: env!("CARGO_PKG_VERSION").to_string(),
+            status: "healthy".to_string(),
+        };
+        
+        let subject = format!("{}.{}.heartbeat", self.subject_prefix, self.hostname);
+        let data = serde_json::to_vec(&heartbeat)?;
+        
+        self.client.publish(subject, data.into()).await?;
         Ok(())
     }
 }
 ```
 
-### 9.5 연결 복원력
+### 9.2 Data Structures
 
+```rust
+#[derive(Serialize, Deserialize)]
+pub struct MetricsBatch {
+    pub hostname: String,
+    pub timestamp: SystemTime,
+    pub metrics: Vec<MetricSample>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Heartbeat {
+    pub hostname: String,
+    pub timestamp: SystemTime,
+    pub uptime_secs: u64,
+    pub agent_version: String,
+    pub status: String,
+}
+
+impl MetricSample {
+    pub fn to_nats_metric(&self) -> NatsMetric {
+        NatsMetric {
+            name: self.metric_id.name.clone(),
+            value: self.value,
+            labels: self.labels.clone(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NatsMetric {
+    pub name: String,
+    pub value: f64,
+    pub labels: HashMap<String, String>,
+}
 ```
-NATS 연결 끊김 시:
-├── async-nats 자동 재연결 (built-in)
-├── 재연결 동안 메트릭 → 로컬 버퍼 (ring buffer, 최대 1000개)
-├── 재연결 성공 → 버퍼 flush
-├── 버퍼 초과 → oldest drop + 카운트 로그
-└── 재연결 실패 → 다른 기능 (알림 채널, 로컬 모니터링)은 정상 동작
-
-NATS 미설정/비활성 시:
-└── NATS Publisher 미초기화, 다른 모듈에 영향 없음
-```
-
-### 9.6 보안
-
-- **TLS**: `nats://` → 평문, `tls://` → TLS 연결
-- **인증**: Token, User/Password, NKey, JWT/Credentials file 지원
-- **Authorization**: NATS server-side subject permission으로 publish-only 제한
-- **Payload**: 민감 정보(serial number 등) 포함 시 TLS 필수
 
 ---
 
 ## 10. Storage
 
-### 6.1 Ring Buffer (In-Memory)
+### 10.1 Ring Buffer
 
-메트릭 종류별로 고정 크기의 ring buffer를 유지합니다.
-
-```
-  Ring Buffer (capacity = 8640, ~24h @ 10s interval)
-
-  head
-   │
-   ▼
-  ┌───┬───┬───┬───┬───┬───┬ ─ ─ ┬───┬───┐
-  │ 0 │ 1 │ 2 │ 3 │ 4 │ 5 │     │n-1│ n │
-  └───┴───┴───┴───┴───┴───┴ ─ ─ ┴───┴───┘
-        ▲                              ▲
-        │                              │
-     oldest                         newest
-     (overwritten                   (next write
-      when full)                     position)
-```
+Per-metric circular buffer for recent data:
 
 ```rust
 pub struct RingBuffer<T> {
-    data: Vec<T>,
-    head: usize,
-    len: usize,
+    data: Vec<Option<T>>,
     capacity: usize,
+    head: usize,
+    size: usize,
+}
+
+impl<T> RingBuffer<T> {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            data: vec![None; capacity],
+            capacity,
+            head: 0,
+            size: 0,
+        }
+    }
+    
+    pub fn push(&mut self, item: T) {
+        self.data[self.head] = Some(item);
+        self.head = (self.head + 1) % self.capacity;
+        
+        if self.size < self.capacity {
+            self.size += 1;
+        }
+    }
+    
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        let start = if self.size == self.capacity {
+            self.head
+        } else {
+            0
+        };
+        
+        (0..self.size)
+            .map(move |i| &self.data[(start + i) % self.capacity])
+            .filter_map(Option::as_ref)
+    }
+    
+    pub fn get_recent(&self, duration: Duration) -> Vec<&T> 
+    where 
+        T: HasTimestamp 
+    {
+        let cutoff = SystemTime::now() - duration;
+        self.iter()
+            .filter(|item| item.timestamp() >= cutoff)
+            .collect()
+    }
+}
+
+pub trait HasTimestamp {
+    fn timestamp(&self) -> SystemTime;
+}
+
+impl HasTimestamp for MetricSample {
+    fn timestamp(&self) -> SystemTime {
+        self.timestamp
+    }
 }
 ```
 
-- 기본 용량: 메트릭당 8,640 샘플 (10초 간격 = 24시간)
-- 총 메모리: ~30 메트릭 × 8,640 × 64 bytes ≈ 16 MB
+### 10.2 Metric Storage
 
-### 6.2 SQLite (Optional, `sqlite` feature)
+```rust
+pub struct MetricStorage {
+    ring_buffers: HashMap<MetricId, RingBuffer<MetricSample>>,
+    buffer_capacity: usize,
+    sqlite_store: Option<SqliteStore>,
+}
 
-장기 보존이 필요한 경우 SQLite에 1분 평균으로 다운샘플링하여 저장합니다.
-
+impl MetricStorage {
+    pub fn new(config: &StorageConfig) -> Result<Self, StorageError> {
+        let sqlite_store = if config.sqlite_enabled {
+            Some(SqliteStore::new(&config.sqlite_path)?)
+        } else {
+            None
+        };
+        
+        Ok(Self {
+            ring_buffers: HashMap::new(),
+            buffer_capacity: config.ring_buffer_size,
+            sqlite_store,
+        })
+    }
+    
+    pub fn store_sample(&mut self, sample: MetricSample) {
+        // Store in ring buffer
+        let buffer = self.ring_buffers
+            .entry(sample.metric_id.clone())
+            .or_insert_with(|| RingBuffer::with_capacity(self.buffer_capacity));
+        
+        buffer.push(sample.clone());
+        
+        // Also store in SQLite if enabled
+        if let Some(ref mut sqlite) = self.sqlite_store {
+            if let Err(e) = sqlite.insert_sample(&sample) {
+                warn!("Failed to store sample in SQLite: {}", e);
+            }
+        }
+    }
+    
+    pub fn get_recent(&self, metric_id: &MetricId, duration: Duration) -> Vec<&MetricSample> {
+        self.ring_buffers
+            .get(metric_id)
+            .map(|buffer| buffer.get_recent(duration))
+            .unwrap_or_default()
+    }
+    
+    pub fn get_all_recent(&self, duration: Duration) -> HashMap<MetricId, Vec<&MetricSample>> {
+        self.ring_buffers
+            .iter()
+            .map(|(metric_id, buffer)| {
+                (metric_id.clone(), buffer.get_recent(duration))
+            })
+            .collect()
+    }
+}
 ```
-Ring Buffer (10s resolution, 24h)
-     │
-     │  every 60s: aggregate
-     ▼
-SQLite (1min avg, 30 days)
-     │
-     table: metrics(timestamp, metric_id, value, labels_json)
-     index: (metric_id, timestamp)
-     mode: WAL (concurrent read/write)
-     │
-     │  daily: delete WHERE timestamp < now() - retention
-     ▼
-  Auto-vacuum
+
+### 10.3 SQLite Store (Optional)
+
+```rust
+#[cfg(feature = "sqlite")]
+pub struct SqliteStore {
+    pool: sqlx::Pool<sqlx::Sqlite>,
+    retention_days: u32,
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteStore {
+    pub async fn new(database_path: &str) -> Result<Self, SqliteError> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)  // SQLite doesn't benefit from multiple connections
+            .connect(&format!("sqlite:{}?mode=rwc", database_path))
+            .await?;
+            
+        // Create tables
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        
+        Ok(Self {
+            pool,
+            retention_days: 30,
+        })
+    }
+    
+    pub async fn insert_sample(&self, sample: &MetricSample) -> Result<(), SqliteError> {
+        let timestamp = sample.timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+            
+        let labels_json = serde_json::to_string(&sample.labels)?;
+        
+        sqlx::query!(
+            r#"
+            INSERT INTO metrics (timestamp, metric_name, value, labels)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+            timestamp,
+            sample.metric_id.name,
+            sample.value,
+            labels_json
+        )
+        .execute(&self.pool)
+        .await?;
+        
+        Ok(())
+    }
+    
+    pub async fn cleanup_old_data(&self) -> Result<u64, SqliteError> {
+        let cutoff = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - (self.retention_days as i64 * 86400);
+            
+        let result = sqlx::query!(
+            "DELETE FROM metrics WHERE timestamp < ?1",
+            cutoff
+        )
+        .execute(&self.pool)
+        .await?;
+        
+        Ok(result.rows_affected())
+    }
+}
 ```
 
 ---
 
 ## 11. Log Analyzer
 
-### 7.1 소스 및 파싱
+### 11.1 Pattern Matching
 
+```rust
+pub struct LogAnalyzer {
+    sources: Vec<Box<dyn LogSource>>,
+    patterns: Vec<LogPattern>,
+    alert_sender: mpsc::Sender<Alert>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LogPattern {
+    pub name: String,
+    pub regex: Regex,
+    pub severity: Severity,
+    pub message_template: String,
+}
+
+#[async_trait]
+pub trait LogSource: Send + Sync {
+    async fn read_lines(&mut self) -> Result<Vec<LogLine>, LogError>;
+}
+
+pub struct LogLine {
+    pub timestamp: SystemTime,
+    pub source: String,
+    pub content: String,
+}
+
+impl LogAnalyzer {
+    pub fn new(config: &LogAnalyzerConfig, alert_sender: mpsc::Sender<Alert>) -> Result<Self, LogError> {
+        let mut sources: Vec<Box<dyn LogSource>> = Vec::new();
+        
+        if config.sources.contains(&"dmesg".to_string()) {
+            sources.push(Box::new(DmesgSource::new()?));
+        }
+        
+        if config.sources.contains(&"syslog".to_string()) {
+            sources.push(Box::new(SyslogSource::new(config.syslog_path.as_deref())?));
+        }
+        
+        if config.sources.contains(&"journald".to_string()) {
+            sources.push(Box::new(JournaldSource::new()?));
+        }
+        
+        let mut patterns = get_default_patterns();
+        for custom_pattern in &config.custom_patterns {
+            patterns.push(LogPattern {
+                name: custom_pattern.name.clone(),
+                regex: Regex::new(&custom_pattern.pattern)?,
+                severity: custom_pattern.severity,
+                message_template: custom_pattern.message_template
+                    .clone()
+                    .unwrap_or_else(|| "Log pattern matched: {}".to_string()),
+            });
+        }
+        
+        Ok(Self {
+            sources,
+            patterns,
+            alert_sender,
+        })
+    }
+    
+    pub async fn run(&mut self) -> Result<(), LogError> {
+        loop {
+            for source in &mut self.sources {
+                match source.read_lines().await {
+                    Ok(lines) => {
+                        for line in lines {
+                            self.analyze_line(&line).await;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to read from log source: {}", e);
+                    }
+                }
+            }
+            
+            // Brief pause to prevent excessive CPU usage
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    
+    async fn analyze_line(&mut self, line: &LogLine) {
+        for pattern in &self.patterns {
+            if let Some(captures) = pattern.regex.captures(&line.content) {
+                let message = if pattern.message_template.contains("{}") {
+                    format!(&pattern.message_template, &line.content)
+                } else {
+                    format!("{}: {}", pattern.name, &line.content)
+                };
+                
+                let alert = Alert {
+                    timestamp: line.timestamp,
+                    severity: pattern.severity,
+                    metric_id: MetricId::new(&format!("log.{}", pattern.name)),
+                    value: 1.0,  // Occurrence count
+                    threshold: None,
+                    message,
+                    labels: hashmap! {
+                        "source".to_string() => line.source.clone(),
+                        "pattern".to_string() => pattern.name.clone(),
+                    },
+                    analyzer: "log".to_string(),
+                };
+                
+                if let Err(e) = self.alert_sender.send(alert).await {
+                    error!("Failed to send log alert: {}", e);
+                }
+                
+                break; // Only match first pattern per line
+            }
+        }
+    }
+}
 ```
- ┌──────────────────────────────────────────────────────┐
- │                  Log Sources                          │
- │                                                       │
- │  ┌─────────────┐  ┌───────────────┐  ┌────────────┐ │
- │  │  /dev/kmsg   │  │ systemd       │  │ /var/log/  │ │
- │  │  (dmesg)     │  │ journal       │  │ syslog     │ │
- │  │              │  │               │  │ messages   │ │
- │  │ CAP_SYSLOG   │  │ libsystemd    │  │ tail -f    │ │
- │  │ 필요         │  │ FFI 또는      │  │ 방식       │ │
- │  │              │  │ 파일 직접     │  │            │ │
- │  └──────┬───────┘  └──────┬────────┘  └─────┬──────┘ │
- │         │                 │                  │        │
- │         └─────────────────┼──────────────────┘        │
- │                           │                           │
- │                           ▼                           │
- │                  ┌────────────────┐                   │
- │                  │ Pattern Matcher │                  │
- │                  │ (regex engine)  │                  │
- │                  └────────┬───────┘                   │
- │                           │                           │
- └───────────────────────────┼───────────────────────────┘
-                             │ LogEvent → Alert
-                             ▼
-                      Alert Manager
+
+### 11.2 Default Patterns
+
+```rust
+fn get_default_patterns() -> Vec<LogPattern> {
+    vec![
+        // OOM Killer
+        LogPattern {
+            name: "oom_kill".to_string(),
+            regex: Regex::new(r"Out of memory: Kill process \d+ \(([^)]+)\)").unwrap(),
+            severity: Severity::Critical,
+            message_template: "OOM Killer activated: {}".to_string(),
+        },
+        
+        // Hardware Errors
+        LogPattern {
+            name: "hardware_error".to_string(),
+            regex: Regex::new(r"(Machine check|Hardware Error|EDAC|ECC)").unwrap(),
+            severity: Severity::Critical,
+            message_template: "Hardware error detected: {}".to_string(),
+        },
+        
+        // GPU Xid Errors
+        LogPattern {
+            name: "gpu_xid_error".to_string(),
+            regex: Regex::new(r"NVRM:.*Xid.*: (\d+)").unwrap(),
+            severity: Severity::Critical,
+            message_template: "GPU Xid error: {}".to_string(),
+        },
+        
+        // Filesystem Errors
+        LogPattern {
+            name: "fs_error".to_string(),
+            regex: Regex::new(r"(EXT4-fs error|XFS.*error|Remounting.*read-only)").unwrap(),
+            severity: Severity::Critical,
+            message_template: "Filesystem error: {}".to_string(),
+        },
+        
+        // Network Interface Down
+        LogPattern {
+            name: "network_down".to_string(),
+            regex: Regex::new(r"(Link is Down|carrier lost)").unwrap(),
+            severity: Severity::Warning,
+            message_template: "Network interface issue: {}".to_string(),
+        },
+        
+        // Hung Tasks
+        LogPattern {
+            name: "hung_task".to_string(),
+            regex: Regex::new(r"blocked for more than \d+ seconds").unwrap(),
+            severity: Severity::Warning,
+            message_template: "Hung task detected: {}".to_string(),
+        },
+    ]
+}
 ```
 
-### 7.2 패턴 라이브러리
+### 11.3 Log Sources
 
-| 패턴 | 정규식 | Severity |
-|------|--------|----------|
-| OOM Kill | `Out of memory: Killed process (\d+) \((.+)\)` | 🔴 Critical |
-| Hardware Error | `(Hardware Error\|Machine check\|MCE\|ECC\|EDAC)` | 🔴 Critical |
-| Filesystem Error | `(EXT4-fs error\|XFS.*error\|Remounting.*read-only)` | 🔴 Critical |
-| Hung Task | `task .+ blocked for more than \d+ seconds` | 🟡 Warn |
-| Network Down | `(NIC Link is Down\|carrier lost\|link is not ready)` | 🟡 Warn |
-| I/O Error | `(I/O error\|Buffer I/O error\|blk_update_request)` | 🔴 Critical |
-| Segfault | `segfault at` | 🟡 Warn |
-| Kernel Panic | `Kernel panic` | ⚫ Emergency |
+```rust
+pub struct DmesgSource {
+    last_position: usize,
+}
 
-사용자 커스텀 패턴도 TOML 설정으로 추가 가능.
+impl DmesgSource {
+    pub fn new() -> Result<Self, LogError> {
+        Ok(Self { last_position: 0 })
+    }
+}
+
+#[async_trait]
+impl LogSource for DmesgSource {
+    async fn read_lines(&mut self) -> Result<Vec<LogLine>, LogError> {
+        let output = tokio::process::Command::new("dmesg")
+            .args(&["-r", "-t"])  // Raw format, no timestamp prefix
+            .output()
+            .await?;
+            
+        if !output.status.success() {
+            return Err(LogError::CommandError("dmesg failed".to_string()));
+        }
+        
+        let content = String::from_utf8(output.stdout)?;
+        let lines: Vec<&str> = content.lines().collect();
+        
+        // Only process new lines since last read
+        let new_lines = if self.last_position < lines.len() {
+            &lines[self.last_position..]
+        } else {
+            &[]
+        };
+        
+        self.last_position = lines.len();
+        
+        let result = new_lines
+            .iter()
+            .map(|line| LogLine {
+                timestamp: SystemTime::now(), // dmesg doesn't provide wall clock time
+                source: "dmesg".to_string(),
+                content: line.to_string(),
+            })
+            .collect();
+            
+        Ok(result)
+    }
+}
+
+pub struct SyslogSource {
+    file_path: PathBuf,
+    reader: Option<tokio::io::BufReader<tokio::fs::File>>,
+}
+
+impl SyslogSource {
+    pub fn new(path: Option<&str>) -> Result<Self, LogError> {
+        let file_path = path
+            .map(PathBuf::from)
+            .or_else(|| detect_syslog_path())
+            .ok_or(LogError::SyslogNotFound)?;
+            
+        Ok(Self {
+            file_path,
+            reader: None,
+        })
+    }
+}
+
+#[async_trait]
+impl LogSource for SyslogSource {
+    async fn read_lines(&mut self) -> Result<Vec<LogLine>, LogError> {
+        // Initialize reader if needed
+        if self.reader.is_none() {
+            let file = tokio::fs::File::open(&self.file_path).await?;
+            // Seek to end of file to only read new lines
+            let mut file = file;
+            file.seek(SeekFrom::End(0)).await?;
+            self.reader = Some(tokio::io::BufReader::new(file));
+        }
+        
+        let mut lines = Vec::new();
+        if let Some(ref mut reader) = self.reader {
+            let mut line_buffer = String::new();
+            
+            // Read available lines (non-blocking)
+            loop {
+                line_buffer.clear();
+                match reader.read_line(&mut line_buffer).await {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        lines.push(LogLine {
+                            timestamp: SystemTime::now(),
+                            source: "syslog".to_string(),
+                            content: line_buffer.trim().to_string(),
+                        });
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(e) => return Err(LogError::IoError(e)),
+                }
+            }
+        }
+        
+        Ok(lines)
+    }
+}
+
+fn detect_syslog_path() -> Option<PathBuf> {
+    let candidates = [
+        "/var/log/syslog",
+        "/var/log/messages",
+        "/var/log/system.log",
+    ];
+    
+    candidates
+        .iter()
+        .find(|path| Path::new(path).exists())
+        .map(PathBuf::from)
+}
+```
 
 ---
 
 ## 12. Security Model
 
-### 8.1 최소 권한 원칙
+### 12.1 Principle of Least Privilege
 
+SysOps Agent runs with minimal privileges:
+
+```rust
+pub fn drop_privileges() -> Result<(), SecurityError> {
+    // Set capability bounds to only what we need
+    let required_caps = [
+        Capability::DacReadSearch,  // Read /proc, /sys files
+        Capability::Syslog,        // Read kernel logs via dmesg
+    ];
+    
+    for cap in Capability::iter() {
+        if !required_caps.contains(&cap) {
+            if let Err(e) = caps::drop(None, CapSet::Bounding, cap) {
+                warn!("Failed to drop capability {:?}: {}", cap, e);
+            }
+        }
+    }
+    
+    // Set effective and permitted capabilities
+    for &cap in &required_caps {
+        caps::set(None, CapSet::Effective, cap)?;
+        caps::set(None, CapSet::Permitted, cap)?;
+    }
+    
+    // Drop all other capabilities
+    caps::clear(None, CapSet::Inheritable)?;
+    
+    Ok(())
+}
+
+pub fn validate_file_access(path: &Path) -> Result<(), SecurityError> {
+    // Whitelist allowed paths
+    let allowed_prefixes = [
+        "/proc/",
+        "/sys/",
+        "/dev/kmsg",
+        "/var/log/",
+        "/etc/sysops-agent/",
+        "/var/lib/sysops-agent/",
+    ];
+    
+    let path_str = path.to_string_lossy();
+    
+    if !allowed_prefixes.iter().any(|prefix| path_str.starts_with(prefix)) {
+        return Err(SecurityError::UnauthorizedPath(path.to_path_buf()));
+    }
+    
+    // Additional checks for symlinks
+    if path.is_symlink() {
+        let target = path.read_link()?;
+        if target.is_absolute() {
+            validate_file_access(&target)?;
+        }
+    }
+    
+    Ok(())
+}
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     Permission Model                          │
-│                                                               │
-│  ┌─────────────────────┬──────────────────┬────────────────┐ │
-│  │ 기능                │ 필요 권한         │ 비고           │ │
-│  ├─────────────────────┼──────────────────┼────────────────┤ │
-│  │ CPU/Memory/Load     │ (없음)           │ 누구나 읽기    │ │
-│  │ Disk Stats/Usage    │ (없음)           │ 누구나 읽기    │ │
-│  │ Network Stats       │ (없음)           │ 누구나 읽기    │ │
-│  │ 다른 유저 프로세스  │ CAP_DAC_READ_    │ /proc/[pid]    │ │
-│  │                     │ SEARCH           │ 접근           │ │
-│  │ dmesg 읽기          │ CAP_SYSLOG       │ /dev/kmsg      │ │
-│  │ Prometheus port     │ (없음)           │ port ≥ 1024    │ │
-│  │ Webhook 전송        │ (없음)           │ outbound HTTPS │ │
-│  └─────────────────────┴──────────────────┴────────────────┘ │
-│                                                               │
-│  ❌ root 불필요                                               │
-│  ❌ 수신 포트 없음 (기본)                                     │
-│  ❌ 파일 쓰기 없음 (SQLite 제외)                              │
-│  ✅ Capabilities만 사용                                       │
-└──────────────────────────────────────────────────────────────┘
+
+### 12.2 Input Validation
+
+```rust
+pub fn validate_config(config: &Config) -> Result<(), ValidationError> {
+    // Validate hostname
+    if config.agent.hostname.is_empty() || config.agent.hostname.len() > 255 {
+        return Err(ValidationError::InvalidHostname);
+    }
+    
+    if !config.agent.hostname.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '.') {
+        return Err(ValidationError::InvalidHostname);
+    }
+    
+    // Validate intervals
+    if config.collector.default_interval_secs == 0 || config.collector.default_interval_secs > 3600 {
+        return Err(ValidationError::InvalidInterval);
+    }
+    
+    // Validate file paths
+    validate_file_access(&PathBuf::from(&config.agent.data_dir))?;
+    
+    if let Some(ref log_file) = config.agent.log_file {
+        validate_file_access(&PathBuf::from(log_file))?;
+    }
+    
+    // Validate webhook URLs
+    for channel in &config.alerting.channels {
+        if let AlertChannelConfig::Webhook { url, .. } = channel {
+            validate_webhook_url(url)?;
+        }
+    }
+    
+    Ok(())
+}
+
+fn validate_webhook_url(url: &str) -> Result<(), ValidationError> {
+    let parsed = url::Url::parse(url)?;
+    
+    // Only allow HTTPS
+    if parsed.scheme() != "https" {
+        return Err(ValidationError::InsecureWebhook);
+    }
+    
+    // Block private IP ranges
+    if let Ok(ip) = parsed.host_str().and_then(|h| h.parse::<IpAddr>()) {
+        if is_private_ip(&ip) {
+            return Err(ValidationError::PrivateIpWebhook);
+        }
+    }
+    
+    Ok(())
+}
+
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => {
+            ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
+        }
+        IpAddr::V6(ipv6) => {
+            ipv6.is_loopback() || ipv6.is_link_local()
+        }
+    }
+}
 ```
 
-### 8.2 네트워크 보안
+### 12.3 Data Sanitization
 
+```rust
+pub fn sanitize_metric_value(value: f64) -> f64 {
+    if value.is_nan() || value.is_infinite() {
+        0.0
+    } else {
+        value.clamp(-1e15, 1e15)  // Prevent extreme values
+    }
+}
+
+pub fn sanitize_log_content(content: &str) -> String {
+    content
+        .chars()
+        .filter(|&c| c.is_ascii_graphic() || c.is_ascii_whitespace())
+        .take(1024)  // Limit log line length
+        .collect()
+}
+
+pub fn sanitize_labels(labels: &mut HashMap<String, String>) {
+    const MAX_LABELS: usize = 20;
+    const MAX_KEY_LEN: usize = 64;
+    const MAX_VALUE_LEN: usize = 256;
+    
+    // Limit number of labels
+    labels.retain(|key, value| {
+        labels.len() <= MAX_LABELS
+            && key.len() <= MAX_KEY_LEN
+            && value.len() <= MAX_VALUE_LEN
+            && is_valid_label_key(key)
+    });
+}
+
+fn is_valid_label_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        && !key.starts_with('_')
+}
 ```
-  SysOps Agent
-  ┌──────────────────┐
-  │                  │
-  │  No listening    │       ┌─── Discord Webhook
-  │  ports (default) │──────▶├─── Slack Webhook
-  │                  │ HTTPS ├─── Telegram API
-  │  Outbound ONLY   │  POST └─── Custom Webhook
-  │                  │
-  │  Optional:       │ listen
-  │  Prometheus ─────│──────▶ 127.0.0.1:9100 (localhost only)
-  └──────────────────┘
-```
-
-### 8.3 Secret 관리
-
-- Webhook URL, SMTP 비밀번호 등은 환경 변수 참조 지원: `${ENV_VAR}`
-- 설정 파일 권한: `0600` 필수
-- **로그에 secret 값 출력 금지** — 마스킹 처리 (`https://hooks.slack.com/***`)
-- systemd `LoadCredential=` 지원 (향후)
 
 ---
 
 ## 13. Platform Abstraction
 
-### 9.1 배포판 감지
+### 13.1 Linux Specific Implementation
 
 ```rust
-fn detect_distro() -> Distro {
-    // 1. /etc/os-release 파싱 (모든 최신 배포판)
-    // 2. /etc/centos-release fallback (CentOS 7)
-    // 3. /etc/redhat-release fallback
+#[cfg(target_os = "linux")]
+pub mod linux {
+    use super::*;
+    
+    pub struct LinuxPlatform;
+    
+    impl Platform for LinuxPlatform {
+        fn cpu_collector(&self) -> Box<dyn Collector> {
+            Box::new(LinuxCpuCollector::new())
+        }
+        
+        fn memory_collector(&self) -> Box<dyn Collector> {
+            Box::new(LinuxMemoryCollector::new())
+        }
+        
+        fn disk_collector(&self) -> Box<dyn Collector> {
+            Box::new(LinuxDiskCollector::new())
+        }
+        
+        fn network_collector(&self) -> Box<dyn Collector> {
+            Box::new(LinuxNetworkCollector::new())
+        }
+        
+        fn process_collector(&self) -> Box<dyn Collector> {
+            Box::new(LinuxProcessCollector::new())
+        }
+    }
+    
+    pub struct LinuxCpuCollector {
+        last_stat: Option<CpuStat>,
+    }
+    
+    impl LinuxCpuCollector {
+        pub fn new() -> Self {
+            Self { last_stat: None }
+        }
+        
+        fn read_proc_stat(&self) -> Result<CpuStat, CollectorError> {
+            let content = std::fs::read_to_string("/proc/stat")
+                .map_err(CollectorError::IoError)?;
+                
+            self.parse_proc_stat(&content)
+        }
+        
+        fn parse_proc_stat(&self, content: &str) -> Result<CpuStat, CollectorError> {
+            let cpu_line = content
+                .lines()
+                .next()
+                .ok_or(CollectorError::ParseError("No CPU line".to_string()))?;
+                
+            let fields: Vec<&str> = cpu_line.split_whitespace().collect();
+            if fields.len() < 8 || fields[0] != "cpu" {
+                return Err(CollectorError::ParseError("Invalid CPU line".to_string()));
+            }
+            
+            Ok(CpuStat {
+                user: fields[1].parse()?,
+                nice: fields[2].parse()?,
+                system: fields[3].parse()?,
+                idle: fields[4].parse()?,
+                iowait: fields[5].parse()?,
+                irq: fields[6].parse()?,
+                softirq: fields[7].parse()?,
+                steal: fields.get(8).unwrap_or(&"0").parse()?,
+            })
+        }
+    }
 }
 
-enum Distro {
-    Ubuntu { version: String },
-    Rocky { version: String },
-    CentOS { version: String },
-    Unknown,
+#[derive(Debug, Clone)]
+struct CpuStat {
+    user: u64,
+    nice: u64,
+    system: u64,
+    idle: u64,
+    iowait: u64,
+    irq: u64,
+    softirq: u64,
+    steal: u64,
+}
+
+impl CpuStat {
+    fn total(&self) -> u64 {
+        self.user + self.nice + self.system + self.idle 
+            + self.iowait + self.irq + self.softirq + self.steal
+    }
+    
+    fn active(&self) -> u64 {
+        self.user + self.nice + self.system + self.irq + self.softirq + self.steal
+    }
 }
 ```
 
-### 9.2 procfs 경로 추상화
+### 13.2 Future Platform Support
 
 ```rust
-pub struct ProcFs {
-    root: PathBuf,  // 기본: "/proc", 테스트: "/tmp/mock_proc"
+pub trait Platform: Send + Sync {
+    fn cpu_collector(&self) -> Box<dyn Collector>;
+    fn memory_collector(&self) -> Box<dyn Collector>;
+    fn disk_collector(&self) -> Box<dyn Collector>;
+    fn network_collector(&self) -> Box<dyn Collector>;
+    fn process_collector(&self) -> Box<dyn Collector>;
 }
 
-impl ProcFs {
-    pub fn stat(&self) -> PathBuf { self.root.join("stat") }
-    pub fn meminfo(&self) -> PathBuf { self.root.join("meminfo") }
-    // ...
+pub fn get_platform() -> Box<dyn Platform> {
+    #[cfg(target_os = "linux")]
+    return Box::new(linux::LinuxPlatform);
+    
+    #[cfg(target_os = "freebsd")]
+    return Box::new(freebsd::FreeBsdPlatform);
+    
+    #[cfg(target_os = "windows")]
+    return Box::new(windows::WindowsPlatform);
+    
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "windows")))]
+    compile_error!("Unsupported platform");
 }
-```
-
-### 9.3 로그 파일 경로
-
-```
-┌──────────────────┬──────────────────────────────┐
-│ 배포판           │ 기본 syslog 경로              │
-├──────────────────┼──────────────────────────────┤
-│ Ubuntu           │ /var/log/syslog               │
-│ CentOS / Rocky   │ /var/log/messages             │
-│ (systemd 환경)   │ journalctl -f (journal)       │
-└──────────────────┴──────────────────────────────┘
 ```
 
 ---
 
 ## 14. Performance Budget
 
-### 10.1 메모리 목표
+### 14.1 Resource Limits
 
+| Resource | Target | Maximum |
+|----------|--------|---------|
+| RSS Memory | 30 MB | 100 MB |
+| CPU (idle) | 0.5% | 2% |
+| CPU (active) | 3% | 10% |
+| Disk I/O | 100 KB/s | 1 MB/s |
+| Network I/O | 50 KB/s | 500 KB/s |
+| File Descriptors | 20 | 50 |
+
+### 14.2 Performance Monitoring
+
+```rust
+pub struct PerformanceMonitor {
+    start_time: Instant,
+    last_metrics: Option<ProcessMetrics>,
+}
+
+pub struct ProcessMetrics {
+    pub cpu_time_user: Duration,
+    pub cpu_time_system: Duration,
+    pub memory_rss: u64,
+    pub memory_vsize: u64,
+    pub io_read_bytes: u64,
+    pub io_write_bytes: u64,
+    pub fd_count: u32,
+}
+
+impl PerformanceMonitor {
+    pub fn new() -> Self {
+        Self {
+            start_time: Instant::now(),
+            last_metrics: None,
+        }
+    }
+    
+    pub fn collect_self_metrics(&mut self) -> Result<SelfMetrics, PerfError> {
+        let current = self.read_process_metrics()?;
+        
+        let cpu_usage_pct = if let Some(ref last) = self.last_metrics {
+            let user_delta = current.cpu_time_user.saturating_sub(last.cpu_time_user);
+            let system_delta = current.cpu_time_system.saturating_sub(last.cpu_time_system);
+            let total_cpu = user_delta + system_delta;
+            let wall_time = Duration::from_secs(10); // collection interval
+            
+            (total_cpu.as_secs_f64() / wall_time.as_secs_f64()) * 100.0
+        } else {
+            0.0
+        };
+        
+        self.last_metrics = Some(current.clone());
+        
+        Ok(SelfMetrics {
+            uptime: self.start_time.elapsed(),
+            cpu_usage_percent: cpu_usage_pct,
+            memory_rss_bytes: current.memory_rss,
+            memory_vsize_bytes: current.memory_vsize,
+            io_read_bytes: current.io_read_bytes,
+            io_write_bytes: current.io_write_bytes,
+            fd_count: current.fd_count,
+        })
+    }
+    
+    fn read_process_metrics(&self) -> Result<ProcessMetrics, PerfError> {
+        let pid = std::process::id();
+        
+        // Read /proc/self/stat for CPU times
+        let stat_content = std::fs::read_to_string("/proc/self/stat")?;
+        let stat_fields: Vec<&str> = stat_content.split_whitespace().collect();
+        
+        let cpu_time_user = Duration::from_secs(
+            stat_fields[13].parse::<u64>()? / 100 // USER_HZ
+        );
+        let cpu_time_system = Duration::from_secs(
+            stat_fields[14].parse::<u64>()? / 100
+        );
+        let memory_vsize = stat_fields[22].parse()?;
+        let memory_rss = stat_fields[23].parse::<u64>()? * 4096; // pages to bytes
+        
+        // Read /proc/self/io for I/O stats
+        let io_content = std::fs::read_to_string("/proc/self/io")?;
+        let mut io_read_bytes = 0;
+        let mut io_write_bytes = 0;
+        
+        for line in io_content.lines() {
+            if line.starts_with("read_bytes:") {
+                io_read_bytes = line.split_whitespace().nth(1).unwrap_or("0").parse()?;
+            } else if line.starts_with("write_bytes:") {
+                io_write_bytes = line.split_whitespace().nth(1).unwrap_or("0").parse()?;
+            }
+        }
+        
+        // Count file descriptors
+        let fd_count = std::fs::read_dir("/proc/self/fd")?.count() as u32;
+        
+        Ok(ProcessMetrics {
+            cpu_time_user,
+            cpu_time_system,
+            memory_rss,
+            memory_vsize,
+            io_read_bytes,
+            io_write_bytes,
+            fd_count,
+        })
+    }
+    
+    pub fn check_resource_limits(&self, metrics: &SelfMetrics) -> Vec<String> {
+        let mut warnings = Vec::new();
+        
+        if metrics.memory_rss_bytes > 100 * 1024 * 1024 {
+            warnings.push(format!(
+                "Memory usage {} exceeds limit of 100MB",
+                bytesize::ByteSize(metrics.memory_rss_bytes)
+            ));
+        }
+        
+        if metrics.cpu_usage_percent > 10.0 {
+            warnings.push(format!(
+                "CPU usage {:.1}% exceeds limit of 10%",
+                metrics.cpu_usage_percent
+            ));
+        }
+        
+        if metrics.fd_count > 50 {
+            warnings.push(format!(
+                "File descriptor count {} exceeds limit of 50",
+                metrics.fd_count
+            ));
+        }
+        
+        warnings
+    }
+}
 ```
-┌────────────────────────────┬──────────────┐
-│ 구성 요소                  │ 예상 사용량   │
-├────────────────────────────┼──────────────┤
-│ Ring Buffer (30 × 24h)     │   ~16 MB     │
-│ Log Buffer                 │    ~2 MB     │
-│ Analyzer State             │    ~1 MB     │
-│ HTTP Client Pool           │    ~2 MB     │
-│ Binary + Stack             │   ~10 MB     │
-├────────────────────────────┼──────────────┤
-│ 합계                       │  ~31 MB      │
-│ 목표                       │  < 50 MB     │
-└────────────────────────────┴──────────────┘
-```
-
-### 10.2 CPU 목표
-
-```
-┌────────────────────────────┬──────────────┐
-│ 상태                       │ CPU 사용률   │
-├────────────────────────────┼──────────────┤
-│ 유휴 (수집 간격 사이)      │   < 0.1%     │
-│ 수집 중 (procfs 파싱)      │   < 1%       │
-│ 분석 중 (z-score, trend)   │   < 2%       │
-│ 알림 전송 중               │   < 1%       │
-│ 피크 (수집+분석 동시)      │   < 5%       │
-└────────────────────────────┴──────────────┘
-```
-
-### 10.3 최적화 전략
-
-- **SmallVec**: label 배열 4개 이하는 스택 할당
-- **String Interning**: 반복 문자열 intern으로 메모리 절약
-- **Batch I/O**: procfs 파일 한 번 읽기 → 여러 메트릭 추출
-- **Lazy Initialization**: 비활성 collector/analyzer 미초기화
-- **tokio runtime**: worker 2개 제한 (서버 CPU 보호)
-- **Connection Pooling**: reqwest 채널당 1개 연결 재사용
 
 ---
 
-## 15. 에러 처리 및 복원력
+## 15. Error Handling and Resilience
 
-### 11.1 장애 격리
+### 15.1 Error Classification
 
+```rust
+pub enum AgentError {
+    // Recoverable errors - continue operation
+    CollectorError(CollectorError),
+    AlertChannelError(ChannelError),
+    StorageError(StorageError),
+    
+    // Fatal errors - shutdown required
+    ConfigurationError(ConfigError),
+    SecurityError(SecurityError),
+    SystemError(SystemError),
+}
+
+impl AgentError {
+    pub fn is_fatal(&self) -> bool {
+        match self {
+            AgentError::ConfigurationError(_) => true,
+            AgentError::SecurityError(_) => true,
+            AgentError::SystemError(e) => e.is_fatal(),
+            _ => false,
+        }
+    }
+    
+    pub fn retry_delay(&self) -> Option<Duration> {
+        match self {
+            AgentError::CollectorError(_) => Some(Duration::from_secs(5)),
+            AgentError::AlertChannelError(_) => Some(Duration::from_secs(10)),
+            AgentError::StorageError(_) => Some(Duration::from_secs(2)),
+            _ => None,
+        }
+    }
+}
 ```
-Collector 실패 → 해당 collector만 skip, 다른 collector 계속 수집
-Analyzer 실패  → 해당 analyzer만 skip, 다른 analyzer 계속 분석
-Channel 실패   → 3회 retry (exponential backoff), 실패 시 다른 채널은 정상 전송
-Storage 실패   → Ring Buffer는 실패 불가 (in-memory), SQLite만 영향
-Config 오류    → 기본값 사용 + 경고 로그
+
+### 15.2 Circuit Breaker Pattern
+
+```rust
+pub struct CircuitBreaker {
+    state: CircuitState,
+    failure_count: u32,
+    success_count: u32,
+    last_failure: Option<Instant>,
+    config: CircuitConfig,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CircuitState {
+    Closed,     // Normal operation
+    Open,       // Failing, blocking calls
+    HalfOpen,   // Testing if service recovered
+}
+
+pub struct CircuitConfig {
+    pub failure_threshold: u32,
+    pub recovery_time: Duration,
+    pub success_threshold: u32,
+}
+
+impl CircuitBreaker {
+    pub fn new(config: CircuitConfig) -> Self {
+        Self {
+            state: CircuitState::Closed,
+            failure_count: 0,
+            success_count: 0,
+            last_failure: None,
+            config,
+        }
+    }
+    
+    pub async fn call<F, T, E>(&mut self, operation: F) -> Result<T, CircuitError<E>>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        match self.state {
+            CircuitState::Open => {
+                if let Some(last_failure) = self.last_failure {
+                    if last_failure.elapsed() >= self.config.recovery_time {
+                        self.state = CircuitState::HalfOpen;
+                        self.success_count = 0;
+                    } else {
+                        return Err(CircuitError::CircuitOpen);
+                    }
+                }
+            }
+            CircuitState::Closed | CircuitState::HalfOpen => {}
+        }
+        
+        match operation() {
+            Ok(result) => {
+                self.on_success();
+                Ok(result)
+            }
+            Err(error) => {
+                self.on_failure();
+                Err(CircuitError::OperationFailed(error))
+            }
+        }
+    }
+    
+    fn on_success(&mut self) {
+        match self.state {
+            CircuitState::HalfOpen => {
+                self.success_count += 1;
+                if self.success_count >= self.config.success_threshold {
+                    self.state = CircuitState::Closed;
+                    self.failure_count = 0;
+                }
+            }
+            CircuitState::Closed => {
+                self.failure_count = 0;
+            }
+            CircuitState::Open => {} // Should not happen
+        }
+    }
+    
+    fn on_failure(&mut self) {
+        self.failure_count += 1;
+        self.last_failure = Some(Instant::now());
+        
+        if self.failure_count >= self.config.failure_threshold {
+            self.state = CircuitState::Open;
+        }
+    }
+}
 ```
 
-### 11.2 Graceful Shutdown
+### 15.3 Graceful Degradation
 
-```
-SIGTERM 수신
-     │
-     ▼
-  Collector 중지 (현재 수집 완료 대기)
-     │
-     ▼
-  Pending Alert 전송 (최대 10초 대기)
-     │
-     ▼
-  SQLite flush & close
-     │
-     ▼
-  PID 파일 제거
-     │
-     ▼
-  Exit(0)
-```
+```rust
+pub struct GracefulAgent {
+    collectors: Vec<(String, Box<dyn Collector>)>,
+    failed_collectors: HashSet<String>,
+    circuit_breakers: HashMap<String, CircuitBreaker>,
+}
 
-### 11.3 Config Reload
-
-```
-SIGHUP 수신
-     │
-     ▼
-  새 config.toml 파싱
-     │
-  ┌──┴──┐
-  │성공  │실패
-  │     │
-  ▼     ▼
- 적용  무시 + 경고 로그
-       (기존 설정 유지)
+impl GracefulAgent {
+    pub async fn collect_all_metrics(&mut self) -> Vec<MetricSample> {
+        let mut all_samples = Vec::new();
+        
+        for (name, collector) in &mut self.collectors {
+            if self.failed_collectors.contains(name) {
+                continue; // Skip permanently failed collectors
+            }
+            
+            let circuit_breaker = self.circuit_breakers
+                .entry(name.clone())
+                .or_insert_with(|| CircuitBreaker::new(CircuitConfig {
+                    failure_threshold: 5,
+                    recovery_time: Duration::from_secs(60),
+                    success_threshold: 3,
+                }));
+            
+            match circuit_breaker.call(|| collector.collect()).await {
+                Ok(samples) => {
+                    all_samples.extend(samples);
+                }
+                Err(CircuitError::CircuitOpen) => {
+                    trace!("Circuit breaker open for collector {}", name);
+                }
+                Err(CircuitError::OperationFailed(e)) => {
+                    warn!("Collector {} failed: {}", name, e);
+                    
+                    // Mark as permanently failed for certain error types
+                    if matches!(e, CollectorError::UnsupportedPlatform | CollectorError::PermissionDenied) {
+                        self.failed_collectors.insert(name.clone());
+                        info!("Permanently disabling collector {} due to: {}", name, e);
+                    }
+                }
+            }
+        }
+        
+        all_samples
+    }
+    
+    pub fn is_healthy(&self) -> bool {
+        let active_collectors = self.collectors.len() - self.failed_collectors.len();
+        active_collectors > 0
+    }
+    
+    pub fn get_status(&self) -> AgentStatus {
+        let total_collectors = self.collectors.len();
+        let failed_collectors = self.failed_collectors.len();
+        let open_circuits = self.circuit_breakers
+            .values()
+            .filter(|cb| cb.state == CircuitState::Open)
+            .count();
+            
+        AgentStatus {
+            total_collectors,
+            failed_collectors,
+            open_circuits,
+            health: if failed_collectors == total_collectors {
+                Health::Critical
+            } else if failed_collectors > 0 || open_circuits > 0 {
+                Health::Degraded
+            } else {
+                Health::Healthy
+            },
+        }
+    }
+}
 ```
 
 ---
 
-## 16. 확장 포인트
+## 16. Extension Points
 
-### 12.1 커스텀 Collector 추가
+### 16.1 Plugin System
 
-`Collector` trait 구현 → `CollectorRegistry`에 등록
+```rust
+pub trait Plugin: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn version(&self) -> &'static str;
+    fn init(&mut self, config: &PluginConfig) -> Result<(), PluginError>;
+    fn collect(&mut self) -> Result<Vec<MetricSample>, PluginError>;
+    fn shutdown(&mut self) -> Result<(), PluginError>;
+}
 
-### 12.2 커스텀 Analyzer 추가
+pub struct PluginManager {
+    plugins: Vec<Box<dyn Plugin>>,
+    plugin_configs: HashMap<String, PluginConfig>,
+}
 
-`Analyzer` trait 구현 → `AnalyzerRegistry`에 등록
+impl PluginManager {
+    pub fn new() -> Self {
+        Self {
+            plugins: Vec::new(),
+            plugin_configs: HashMap::new(),
+        }
+    }
+    
+    pub fn load_plugin<P: Plugin + 'static>(&mut self, plugin: P) -> Result<(), PluginError> {
+        let plugin_name = plugin.name().to_string();
+        let mut boxed_plugin = Box::new(plugin);
+        
+        // Initialize plugin with config
+        if let Some(config) = self.plugin_configs.get(&plugin_name) {
+            boxed_plugin.init(config)?;
+        } else {
+            // Use default config
+            boxed_plugin.init(&PluginConfig::default())?;
+        }
+        
+        self.plugins.push(boxed_plugin);
+        info!("Loaded plugin: {} v{}", plugin_name, boxed_plugin.version());
+        
+        Ok(())
+    }
+    
+    pub async fn collect_all(&mut self) -> Vec<MetricSample> {
+        let mut all_samples = Vec::new();
+        
+        for plugin in &mut self.plugins {
+            match plugin.collect() {
+                Ok(samples) => {
+                    debug!("Plugin {} collected {} samples", plugin.name(), samples.len());
+                    all_samples.extend(samples);
+                }
+                Err(e) => {
+                    warn!("Plugin {} collection failed: {}", plugin.name(), e);
+                }
+            }
+        }
+        
+        all_samples
+    }
+}
 
-### 12.3 커스텀 Alert Channel 추가
+// Example custom plugin
+pub struct DatabasePlugin {
+    connection: Option<DatabaseConnection>,
+    config: DatabaseConfig,
+}
 
-`AlertChannel` trait 구현 → config에 채널 추가
+impl Plugin for DatabasePlugin {
+    fn name(&self) -> &'static str { "database" }
+    fn version(&self) -> &'static str { "1.0.0" }
+    
+    fn init(&mut self, config: &PluginConfig) -> Result<(), PluginError> {
+        self.config = DatabaseConfig::from_plugin_config(config)?;
+        self.connection = Some(DatabaseConnection::new(&self.config)?);
+        Ok(())
+    }
+    
+    fn collect(&mut self) -> Result<Vec<MetricSample>, PluginError> {
+        let conn = self.connection.as_ref().ok_or(PluginError::NotInitialized)?;
+        
+        let mut samples = Vec::new();
+        
+        // Collect connection count
+        let connection_count = conn.query_scalar("SELECT COUNT(*) FROM pg_stat_activity")?;
+        samples.push(MetricSample {
+            timestamp: SystemTime::now(),
+            metric_id: MetricId::new("db.connections.active"),
+            value: connection_count as f64,
+            labels: hashmap! {
+                "database".to_string() => self.config.database_name.clone(),
+            },
+        });
+        
+        // Collect transaction rate
+        let tx_committed = conn.query_scalar("SELECT xact_commit FROM pg_stat_database WHERE datname = $1", 
+                                           &[&self.config.database_name])?;
+        samples.push(MetricSample {
+            timestamp: SystemTime::now(),
+            metric_id: MetricId::new("db.transactions.committed_total"),
+            value: tx_committed as f64,
+            labels: hashmap! {
+                "database".to_string() => self.config.database_name.clone(),
+            },
+        });
+        
+        Ok(samples)
+    }
+    
+    fn shutdown(&mut self) -> Result<(), PluginError> {
+        if let Some(conn) = self.connection.take() {
+            conn.close()?;
+        }
+        Ok(())
+    }
+}
+```
 
-### 12.4 향후 로드맵
+### 16.2 Custom Analyzers
 
-- **Agent → Central Server** 아키텍처 (중앙 집계)
-- **Container 모니터링** (cgroup v2 메트릭)
-- **GPU 모니터링** (nvidia-smi 파싱)
-- **Windows 지원** (WMI/Performance Counters)
-- **Auto-remediation** (알림 → 자동 조치: 프로세스 재시작, 로그 정리 등)
+```rust
+pub trait CustomAnalyzer: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn analyze(&mut self, samples: &[MetricSample]) -> Vec<Alert>;
+}
+
+// Example: Correlation analyzer
+pub struct CorrelationAnalyzer {
+    correlation_rules: Vec<CorrelationRule>,
+    time_window: Duration,
+}
+
+pub struct CorrelationRule {
+    pub name: String,
+    pub primary_metric: MetricId,
+    pub secondary_metrics: Vec<MetricId>,
+    pub correlation_threshold: f64,
+    pub alert_threshold: f64,
+}
+
+impl CustomAnalyzer for CorrelationAnalyzer {
+    fn name(&self) -> &'static str { "correlation" }
+    
+    fn analyze(&mut self, samples: &[MetricSample]) -> Vec<Alert> {
+        let mut alerts = Vec::new();
+        
+        for rule in &self.correlation_rules {
+            if let Some(alert) = self.check_correlation_rule(rule, samples) {
+                alerts.push(alert);
+            }
+        }
+        
+        alerts
+    }
+}
+
+impl CorrelationAnalyzer {
+    fn check_correlation_rule(&self, rule: &CorrelationRule, samples: &[MetricSample]) -> Option<Alert> {
+        // Get samples for primary metric
+        let primary_samples: Vec<_> = samples
+            .iter()
+            .filter(|s| s.metric_id == rule.primary_metric)
+            .collect();
+            
+        if primary_samples.len() < 10 {
+            return None; // Not enough data
+        }
+        
+        // Check if primary metric is anomalous
+        let primary_values: Vec<f64> = primary_samples.iter().map(|s| s.value).collect();
+        if !self.is_anomalous(&primary_values) {
+            return None;
+        }
+        
+        // Check correlation with secondary metrics
+        let mut correlations = Vec::new();
+        for secondary_metric in &rule.secondary_metrics {
+            let secondary_samples: Vec<_> = samples
+                .iter()
+                .filter(|s| s.metric_id == *secondary_metric)
+                .collect();
+                
+            if let Some(correlation) = self.calculate_correlation(&primary_samples, &secondary_samples) {
+                correlations.push(correlation);
+            }
+        }
+        
+        // Check if any correlation exceeds threshold
+        let max_correlation = correlations.into_iter()
+            .map(|c| c.abs())
+            .max_by(|a, b| a.partial_cmp(b).unwrap())?;
+            
+        if max_correlation >= rule.correlation_threshold {
+            Some(Alert {
+                timestamp: SystemTime::now(),
+                severity: Severity::Warning,
+                metric_id: rule.primary_metric.clone(),
+                value: max_correlation,
+                threshold: Some(rule.correlation_threshold),
+                message: format!(
+                    "High correlation detected between {} and secondary metrics (r={:.3})",
+                    rule.primary_metric,
+                    max_correlation
+                ),
+                labels: HashMap::new(),
+                analyzer: "correlation".to_string(),
+            })
+        } else {
+            None
+        }
+    }
+    
+    fn calculate_correlation(&self, primary: &[&MetricSample], secondary: &[&MetricSample]) -> Option<f64> {
+        if primary.len() != secondary.len() || primary.len() < 3 {
+            return None;
+        }
+        
+        let primary_values: Vec<f64> = primary.iter().map(|s| s.value).collect();
+        let secondary_values: Vec<f64> = secondary.iter().map(|s| s.value).collect();
+        
+        pearson_correlation(&primary_values, &secondary_values)
+    }
+}
+
+fn pearson_correlation(x: &[f64], y: &[f64]) -> Option<f64> {
+    if x.len() != y.len() || x.len() < 2 {
+        return None;
+    }
+    
+    let n = x.len() as f64;
+    let sum_x: f64 = x.iter().sum();
+    let sum_y: f64 = y.iter().sum();
+    let sum_xy: f64 = x.iter().zip(y.iter()).map(|(a, b)| a * b).sum();
+    let sum_x2: f64 = x.iter().map(|a| a * a).sum();
+    let sum_y2: f64 = y.iter().map(|b| b * b).sum();
+    
+    let numerator = n * sum_xy - sum_x * sum_y;
+    let denominator = ((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)).sqrt();
+    
+    if denominator.abs() < f64::EPSILON {
+        None
+    } else {
+        Some(numerator / denominator)
+    }
+}
+```
 
 ---
 
-## 부록 A. 메시징 솔루션 비교 분석
-
-SysOps Agent의 텔레메트리 전송 및 Control Plane 구현을 위해 주요 메시징 솔루션을 다각적으로 비교 분석했습니다.
-
-### A.1 평가 기준
-
-SysOps Agent 유스케이스 요구사항:
-- 수천~수만 에이전트에서 소량 메트릭(JSON 수KB)을 고빈도(10~30초)로 전송
-- 양방향 통신: 텔레메트리(Agent→Server) + 제어(Server→Agent, config push/restart)
-- Agent 경량성: 단일 Rust 바이너리, 리소스 최소화
-- Server 수평 확장: 여러 ingest worker가 부하 분산
-- 운영 단순성: Private Cloud 환경에서 최소 인프라
-
-### A.2 후보 솔루션 7종
-
-#### NATS (현재 선택) ⭐
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  NATS — Cloud-Native Messaging                                   │
-│                                                                   │
-│  아키텍처: Go 단일 바이너리 (<20MB), 내장 클러스터링              │
-│  프로토콜: 자체 텍스트 프로토콜 (매우 경량)                       │
-│  패턴: Pub/Sub + Request-Reply + Queue Groups (모두 네이티브)     │
-│  보장: Core=at-most-once, JetStream=at-least/exactly-once        │
-│  성능: 200K-400K msg/sec (persistent), sub-ms 레이턴시            │
-│  Rust: async-nats (공식, 성숙)                                    │
-│                                                                   │
-│  ✅ Request-Reply → Control Plane에 이상적                        │
-│  ✅ Queue Groups → Server ingest worker 수평 확장 투명             │
-│  ✅ Subject wildcard → sysops.*.metrics 유연한 라우팅              │
-│  ✅ Multi-tenancy (accounts) → 팀/환경 격리                       │
-│  ✅ 운영 복잡도 최소 — ZooKeeper/Erlang 불필요                    │
-│  ⚠️ Kafka 대비 throughput 낮음 (대량 로그에는 부적합)             │
-│  ⚠️ 생태계가 Kafka/RabbitMQ보다 작음                              │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-#### Apache Kafka
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Kafka — Distributed Commit Log                                   │
-│                                                                   │
-│  아키텍처: JVM 기반, ZooKeeper/KRaft, 최소 3~6노드               │
-│  프로토콜: 자체 바이너리 프로토콜                                  │
-│  패턴: Pub/Sub + Consumer Groups (Request-Reply 없음)             │
-│  보장: at-least-once (기본), exactly-once (트랜잭션)               │
-│  성능: 500K-1M+ msg/sec (배치), 10-50ms 레이턴시                 │
-│  Rust: rdkafka (librdkafka 바인딩, 무거움)                        │
-│                                                                   │
-│  ✅ 최고 throughput, 대용량 데이터 스트리밍 강자                   │
-│  ✅ 영구 저장 + replay, 정확한 순서 보장                           │
-│  ✅ 최대 생태계 (Connect, Streams, ksqlDB)                        │
-│  ❌ Request-Reply 없음 → Control Plane 별도 구현 필요              │
-│  ❌ Agent 측 librdkafka 무거움 (~수MB, C 의존)                    │
-│  ❌ 운영 복잡도 높음 (최소 3노드, partition 관리)                   │
-│  ❌ 10K 에이전트 소량 메트릭에는 과도 (대포로 참새 잡기)           │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-#### RabbitMQ
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  RabbitMQ — Enterprise Message Broker                             │
-│                                                                   │
-│  아키텍처: Erlang/OTP, 최소 2GB RAM                               │
-│  프로토콜: AMQP 0-9-1 (+ MQTT, STOMP 플러그인)                   │
-│  패턴: Pub/Sub + Work Queues + Direct Reply-to                    │
-│  보장: at-least-once (publisher confirms + consumer acks)          │
-│  성능: 50K-100K msg/sec, 5-20ms 레이턴시                          │
-│  Rust: lapin (AMQP, 보통 성숙도)                                  │
-│                                                                   │
-│  ✅ AMQP 표준, 풍부한 라우팅 (exchange, routing key)               │
-│  ✅ Management UI 내장                                             │
-│  ✅ Quorum queues로 안정적 HA                                      │
-│  ⚠️ Erlang 기반 → NATS의 4-8배 리소스                             │
-│  ⚠️ NATS의 절반 수준 throughput                                    │
-│  ⚠️ AMQP 클라이언트가 NATS보다 복잡                               │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-#### MQTT (Mosquitto / EMQX)
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  MQTT — IoT Standard Protocol                                     │
-│                                                                   │
-│  아키텍처: 경량 브로커 (Mosquitto ~1MB, EMQX=Erlang)              │
-│  프로토콜: MQTT 3.1.1 / 5.0 (2바이트 헤더, 최소 오버헤드)        │
-│  패턴: Pub/Sub only (Request-Reply 없음)                          │
-│  보장: QoS 0(fire-forget) / 1(at-least-once) / 2(exactly-once)   │
-│  성능: 높은 동시 연결 (EMQX: 100M+), 적절한 throughput            │
-│  Rust: rumqttc (성숙)                                              │
-│                                                                   │
-│  ✅ 프로토콜 오버헤드 최소, IoT 표준                               │
-│  ✅ LWT (Last Will and Testament) → 에이전트 오프라인 감지          │
-│  ✅ Retained messages → 마지막 상태 자동 유지                      │
-│  ❌ Request-Reply 없음 → Control Plane 별도 구현                   │
-│  ❌ Queue groups 없음 → Server 수평 확장에 불리                    │
-│  ❌ Persistence/replay가 비표준 (브로커마다 다름)                   │
-│  ❌ 서버 모니터링보다 IoT 센서에 최적화된 설계                     │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-#### gRPC / OTLP (Direct Streaming)
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  gRPC — Direct Agent-to-Server Streaming                          │
-│                                                                   │
-│  아키텍처: 브로커 없음, Agent가 Server에 직접 연결                 │
-│  프로토콜: HTTP/2 + Protobuf (OTLP 표준 가능)                    │
-│  패턴: Unary RPC + Server/Client/Bidirectional Streaming          │
-│  보장: at-most-once (재시도 로직 직접 구현)                        │
-│  성능: 매우 낮은 레이턴시, Protobuf=JSON 대비 ~70% 작음           │
-│  Rust: tonic (성숙, 공식급)                                        │
-│                                                                   │
-│  ✅ 브로커 인프라 불필요                                           │
-│  ✅ Bidirectional streaming → Control Plane에 강력                 │
-│  ✅ Type-safe API (protobuf 코드 생성)                             │
-│  ✅ OpenTelemetry OTLP/OpAMP 표준 호환 가능                       │
-│  ❌ 단일 장애점: Server 다운 시 전체 Agent 전송 실패               │
-│  ❌ 수만 persistent connection을 Server가 직접 관리해야 함         │
-│  ❌ Fan-out/routing/buffering 직접 구현 필요                       │
-│  ❌ Server 수평 확장 시 Agent reconnect 로직 복잡                  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-**참고: OpAMP (Open Agent Management Protocol)**
-
-OpenTelemetry 프로젝트에서 정의한 에이전트 fleet 관리 표준 프로토콜. Config push, health reporting, 업그레이드 관리를 포함. WebSocket/HTTP 기반. SysOps Agent의 Control Plane 설계 시 참고할 가치가 있으며, 향후 호환 레이어 검토 가능.
-
-#### Direct HTTP Push (Datadog/Telegraf 방식)
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  HTTP Push — REST API Direct Push                                 │
-│                                                                   │
-│  아키텍처: 브로커 없음, Agent가 Server REST API에 POST            │
-│  프로토콜: HTTP/1.1 or HTTP/2 + JSON/Protobuf                    │
-│  패턴: 단방향 (Agent→Server만)                                    │
-│                                                                   │
-│  ✅ 구현 최단순, 표준 HTTP                                        │
-│  ✅ Agent 측 reqwest만으로 구현 가능                               │
-│  ❌ 단방향 — Control Plane(Server→Agent) 별도 메커니즘 필요        │
-│  ❌ Server 다운 시 메트릭 유실 (재전송 로직 Agent 부담)            │
-│  ❌ 수만 에이전트 동시 POST → Server HTTP 병목                     │
-│  ❌ Connection per request 비효율 (HTTP/2 필요)                    │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-#### Prometheus Pull Model
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Prometheus Pull — Server Scrapes Agents                          │
-│                                                                   │
-│  아키텍처: Server가 모든 Agent의 /metrics 엔드포인트를 scrape     │
-│  프로토콜: HTTP GET + Prometheus text format                      │
-│                                                                   │
-│  ✅ 업계 표준, Grafana 연동 최적                                   │
-│  ❌ Agent에 수신 포트 필요 → 보안 공격 표면 증가                   │
-│  ❌ NAT/방화벽 뒤의 에이전트 접근 불가                             │
-│  ❌ 10K+ 에이전트 scrape는 실용적이지 않음                         │
-│  ❌ Push 모델인 SysOps와 근본적으로 다른 철학                      │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### A.3 정량 비교표
-
-```
-┌─────────────┬────────┬────────┬────────┬────────┬────────┬────────┐
-│             │  NATS  │ Kafka  │Rabbit  │  MQTT  │  gRPC  │  HTTP  │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ Throughput  │  200K  │  1M+   │ 100K   │ 100K+  │  高    │  中    │
-│ (msg/sec)   │ -400K  │        │        │        │        │        │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ Latency     │ <1ms   │10-50ms │ 5-20ms │ <1ms   │ <1ms   │ 1-5ms  │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ Server      │ <20MB  │ 1GB+   │ 200MB+ │ <10MB  │  N/A   │  N/A   │
-│ Footprint   │        │ (JVM)  │(Erlang)│        │(no brk)│(no brk)│
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ 최소 RAM    │ 64MB   │  4GB+  │  2GB+  │ 64MB   │  N/A   │  N/A   │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ Request-    │   ✅   │   ❌   │   ⚠️   │   ❌   │   ✅   │   ❌   │
-│ Reply       │ native │        │limited │        │bidir   │        │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ Queue       │   ✅   │   ✅   │   ✅   │   ❌   │   ❌   │   ❌   │
-│ Groups      │        │ConsGrp │WorkQ   │        │        │        │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ Persistence │   ✅   │   ✅   │   ✅   │   ⚠️   │   ❌   │   ❌   │
-│             │JetStrm │ native │Quorum  │broker  │        │        │
-│             │        │        │        │specific│        │        │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ 운영 노드   │  1-3   │  3-6+  │  2-3   │  1-3   │   0    │   0    │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ Rust Crate  │async-  │rdkafka │ lapin  │rumqttc │ tonic  │reqwest │
-│             │nats ◉  │ ◉      │ ○      │ ◉      │ ◉      │ ◉      │
-│             │(성숙)  │(C dep) │(보통)  │(성숙)  │(성숙)  │(성숙)  │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ Control     │  ◉◉◉   │  ◉     │  ◉◉    │  ◉     │ ◉◉◉   │  ◉     │
-│ Plane 적합  │req-rep │        │dir-rep │        │bidir   │        │
-├─────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
-│ SysOps      │ ⭐⭐⭐  │  ⭐    │ ⭐⭐   │  ⭐    │ ⭐⭐   │  ⭐    │
-│ 적합도      │ 최적   │  과도  │  차선  │IoT특화 │소규모ok│ 제한적 │
-└─────────────┴────────┴────────┴────────┴────────┴────────┴────────┘
-```
-
-### A.4 스케일별 권장 솔루션
-
-```
-┌─────────────────────┬──────────────────────────────────────────┐
-│ 에이전트 규모       │ 권장 솔루션                              │
-├─────────────────────┼──────────────────────────────────────────┤
-│ < 100               │ gRPC 직접 연결 또는 NATS 단일 노드       │
-│ 100 ~ 10,000        │ NATS (JetStream) ← SysOps 현재 타겟     │
-│ 10,000 ~ 100,000    │ NATS 클러스터 (3-5 노드)                 │
-│ 100,000+            │ Kafka/Redpanda + 별도 Control Plane      │
-│                     │ (또는 NATS Super Cluster)                 │
-└─────────────────────┴──────────────────────────────────────────┘
-```
-
-### A.5 결론: NATS 선택 근거
-
-SysOps Agent 유스케이스에서 NATS가 최적인 이유:
-
-1. **양방향 통신 네이티브**: Pub/Sub(텔레메트리) + Request-Reply(제어)를 하나의 프로토콜로 해결. Kafka/MQTT는 Request-Reply가 없어 Control Plane을 별도 구현해야 함.
-
-2. **운영 단순성**: 단일 바이너리, 설정 최소, ZooKeeper/Erlang 불필요. Private Cloud 환경에서 운영 팀 부담 최소화.
-
-3. **정확한 스케일 매치**: 10K 에이전트 × 30개 메트릭 × 10초 간격 = ~30K msg/sec. NATS JetStream의 sweet spot (200K-400K 용량의 10-15%).
-
-4. **Agent 경량성**: `async-nats` Rust crate가 순수 Rust로 외부 C 의존 없음. Kafka의 `rdkafka`(librdkafka C 바인딩)와 대조적.
-
-5. **Queue Groups**: Server ingest worker를 여러 인스턴스로 수평 확장할 때, NATS queue group이 자동으로 부하 분산. 코드 변경 없이 확장 가능.
-
-6. **Subject Hierarchy**: `sysops.{hostname}.{metrics|alerts|inventory|heartbeat}` 구조가 NATS의 wildcard 구독(`sysops.>`, `sysops.*.alerts`)과 완벽 매치.
-
-**향후 확장 시 고려사항:**
-- 100K+ 에이전트 도달 시 NATS Super Cluster 또는 Kafka 전환 평가
-- OpenTelemetry OpAMP 프로토콜 호환 레이어 검토 (에이전트 관리 표준화)
-- NATS의 MQTT 브리지를 활용한 IoT 에이전트 통합 가능성
+This comprehensive design document covers all major aspects of SysOps Agent's architecture, from low-level system integration to high-level operational concerns. The modular design allows for easy extension and maintenance while maintaining security and performance requirements.
