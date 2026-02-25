@@ -13,7 +13,7 @@ categories = ["command-line-utilities"]
 [features]
 default = ["tls-rustls"]
 gpu = ["dep:nvml-wrapper"]
-nats = ["dep:async-nats", "dep:zstd"]
+nats = ["dep:async-nats", "dep:zstd", "dep:futures-util"]
 prometheus = ["dep:prometheus", "dep:hyper", "dep:hyper-util"]
 sqlite = ["dep:rusqlite"]
 tls-native = ["reqwest/native-tls"]
@@ -65,6 +65,7 @@ nvml-wrapper = { version = "0.10", optional = true }
 
 # Optional: NATS messaging
 async-nats = { version = "0.37", optional = true }
+futures-util = { version = "0.3", optional = true }
 zstd = { version = "0.13", optional = true }
 
 # Email (SMTP)
