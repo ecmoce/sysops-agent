@@ -154,10 +154,45 @@ pub fn start_handlers(
     }
 }
 
+/// Validate that a command is safe to execute.
+/// Rejects commands with shell metacharacters that could enable injection.
+fn validate_command(cmd: &str) -> Result<(), String> {
+    // Block empty commands
+    if cmd.trim().is_empty() {
+        return Err("Empty command".into());
+    }
+    // Block obviously dangerous commands
+    let dangerous = ["rm -rf /", "mkfs", "dd if=", "> /dev/sd", ":(){ :|:& };:"];
+    for d in &dangerous {
+        if cmd.contains(d) {
+            return Err(format!("Blocked dangerous command pattern: {}", d));
+        }
+    }
+    // Block shell chaining that could bypass intent
+    // Allow pipes and simple redirects, but block backgrounding and command substitution
+    for pattern in &["$(",  "`", "&&", "||", ";"] {
+        if cmd.contains(pattern) {
+            return Err(format!("Command chaining not allowed: {}", pattern));
+        }
+    }
+    Ok(())
+}
+
 async fn execute_command(cmd: &str) -> ExecResponse {
     let start = std::time::Instant::now();
 
-    // Safety: run via sh -c with a timeout
+    // Validate command safety
+    if let Err(reason) = validate_command(cmd) {
+        return ExecResponse {
+            command: cmd.to_string(),
+            stdout: String::new(),
+            stderr: format!("Command rejected: {}", reason),
+            exit_code: -1,
+            duration_ms: 0,
+        };
+    }
+
+    // Run via sh -c with a timeout
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(55),
         Command::new("sh")

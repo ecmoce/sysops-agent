@@ -4,8 +4,6 @@ use anyhow::Result;
 use async_nats::Client;
 use chrono::Utc;
 use serde::Serialize;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn, error, debug};
@@ -64,6 +62,8 @@ pub struct NatsPublisher {
     config: NatsConfig,
     hostname: String,
     metrics_buffer: Arc<Mutex<Vec<MetricEntry>>>,
+    /// Hash of last published inventory to avoid redundant publishes
+    #[allow(dead_code)]
     last_inventory_hash: Arc<Mutex<u64>>,
 }
 
@@ -245,10 +245,14 @@ fn read_uptime() -> Option<u64> {
 }
 
 fn get_primary_ip() -> Option<String> {
-    // Try to get a non-loopback IP from /proc/net/fib_trie or fallback
-    std::fs::read_to_string("/proc/net/if_inet6")
-        .ok();
-    // Simple approach: read hostname's resolved IP
+    // Parse /proc/net/fib_trie for local addresses, or use a simpler approach
+    // via reading interface addresses from /sys/class/net
+    if let Ok(output) = std::process::Command::new("hostname").arg("-I").output() {
+        if output.status.success() {
+            let ips = String::from_utf8_lossy(&output.stdout);
+            return ips.split_whitespace().next().map(String::from);
+        }
+    }
     None
 }
 

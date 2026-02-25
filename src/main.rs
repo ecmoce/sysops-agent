@@ -214,7 +214,7 @@ async fn run(config: config::Config) -> Result<()> {
     if let Some(ref np) = nats_pub {
         // Get the underlying NATS client for handlers
         // We need to create a separate client for the handlers
-        let handler_client = if config.nats.enabled {
+        if config.nats.enabled {
             match async_nats::connect(&config.nats.url).await {
                 Ok(c) => {
                     nats_handlers::start_handlers(
@@ -229,7 +229,7 @@ async fn run(config: config::Config) -> Result<()> {
                     error!(error = %e, "Failed to connect NATS for handlers");
                 }
             }
-        };
+        }
     }
 
     // Spawn NATS periodic tasks (metrics flush, heartbeat, inventory)

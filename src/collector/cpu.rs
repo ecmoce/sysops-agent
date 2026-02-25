@@ -72,9 +72,9 @@ impl CpuCollector {
                                 labels: smallvec![],
                             });
 
-                            // iowait percentage
-                            let d_iowait = iowait.saturating_sub(0); // simplified
-                            let iowait_pct = 100.0 * d_iowait as f64 / d_total as f64;
+                            // iowait and steal as percentage of delta total
+                            // Note: iowait/steal are cumulative, so use them as proportion of total
+                            let iowait_pct = if d_total > 0 { 100.0 * iowait as f64 / total as f64 } else { 0.0 };
                             samples.push(MetricSample {
                                 timestamp: now,
                                 metric: MetricId::CpuIoWait,
@@ -83,7 +83,7 @@ impl CpuCollector {
                             });
 
                             // steal percentage
-                            let steal_pct = 100.0 * steal as f64 / d_total as f64;
+                            let steal_pct = if d_total > 0 { 100.0 * steal as f64 / total as f64 } else { 0.0 };
                             samples.push(MetricSample {
                                 timestamp: now,
                                 metric: MetricId::CpuSteal,
