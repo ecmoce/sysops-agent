@@ -8,6 +8,8 @@ pub mod log_analyzer;
 pub mod nats_publisher;
 #[cfg(feature = "nats")]
 pub mod inventory;
+#[cfg(feature = "nats")]
+pub mod nats_handlers;
 
 /// Common types used across modules
 pub mod types {

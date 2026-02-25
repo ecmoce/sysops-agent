@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use sysops_agent::{collector, analyzer, alerter, config, storage, log_analyzer};
 #[cfg(feature = "nats")]
-use sysops_agent::{nats_publisher, inventory};
+use sysops_agent::{nats_publisher, nats_handlers, inventory};
 
 #[derive(Parser, Debug)]
 #[command(name = "sysops-agent", about = "Lightweight system monitoring agent")]
@@ -208,6 +208,29 @@ async fn run(config: config::Config) -> Result<()> {
             }
         }
     });
+
+    // Start NATS request-reply handlers (snapshot, exec)
+    #[cfg(feature = "nats")]
+    if let Some(ref np) = nats_pub {
+        // Get the underlying NATS client for handlers
+        // We need to create a separate client for the handlers
+        let handler_client = if config.nats.enabled {
+            match async_nats::connect(&config.nats.url).await {
+                Ok(c) => {
+                    nats_handlers::start_handlers(
+                        c,
+                        config.agent.hostname.clone(),
+                        config.nats.subject_prefix.clone(),
+                        storage.clone(),
+                    );
+                    info!("NATS request-reply handlers started");
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to connect NATS for handlers");
+                }
+            }
+        };
+    }
 
     // Spawn NATS periodic tasks (metrics flush, heartbeat, inventory)
     #[cfg(feature = "nats")]
